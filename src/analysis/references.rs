@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::{self, analyze_signals};
+use crate::analysis::signals::{self, SignalAnalysis};
 use crate::line_index::LineIndex;
 
 /// Find all references to the signal or action at the given position.
@@ -10,10 +10,10 @@ pub fn find_references(
     line_index: &LineIndex,
     position: Position,
     uri: &Url,
+    analysis: &SignalAnalysis,
     project_index: Option<&ProjectIndex>,
 ) -> Vec<Location> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
-    let analysis = analyze_signals(line_index.text());
     let bytes = line_index.text().as_bytes();
 
     // Find which signal reference the cursor is on
@@ -128,7 +128,8 @@ mod tests {
         };
 
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let locs = find_references(&line_index, pos, &uri, None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let locs = find_references(&line_index, pos, &uri, &analysis, None);
         // Should find: definition at data-signals:counter, ref at $counter in data-text, ref at $counter++ in data-on
         assert!(
             locs.len() >= 3,
@@ -149,7 +150,8 @@ mod tests {
         };
 
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let locs = find_references(&line_index, pos, &uri, None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let locs = find_references(&line_index, pos, &uri, &analysis, None);
         assert!(
             locs.is_empty(),
             "undefined signal should have no references"

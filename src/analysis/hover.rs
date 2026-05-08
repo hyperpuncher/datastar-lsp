@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
-use crate::analysis::signals;
+use crate::analysis::signals::{self, SignalAnalysis};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
@@ -10,6 +10,7 @@ pub fn generate(
     line_index: &LineIndex,
     position: Position,
     attrs: &[DataAttribute],
+    analysis: &SignalAnalysis,
 ) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
@@ -17,15 +18,8 @@ pub fn generate(
         if offset >= attr.name_start && offset <= attr.name_start + attr.raw_name.len() {
             return hover_attribute(attr);
         }
-        if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
-            let value_end = value_start + value.len() + 2;
-            if offset >= value_start && offset <= value_end {
-                return hover_value(
-                    attr,
-                    offset.saturating_sub(value_start + 1),
-                    line_index.text(),
-                );
-            }
+        if let Some(rel) = attr.value_rel_offset(offset) {
+            return hover_value(attr, rel, analysis);
         }
     }
 
@@ -85,14 +79,18 @@ fn hover_attribute(attr: &DataAttribute) -> Option<Hover> {
     })
 }
 
-fn hover_value(attr: &DataAttribute, value_offset: usize, full_text: &str) -> Option<Hover> {
+fn hover_value(
+    attr: &DataAttribute,
+    value_offset: usize,
+    analysis: &SignalAnalysis,
+) -> Option<Hover> {
     let value = attr.value.as_ref()?;
     let bytes = value.as_bytes();
 
     if value_offset < bytes.len() && bytes[value_offset] == b'$' {
         let (name, _) = signals::read_signal_token(bytes, value_offset + 1);
         if !name.is_empty() {
-            return hover_signal_name(name, full_text);
+            return hover_signal_name(name, analysis);
         }
         return None;
     }
@@ -102,14 +100,13 @@ fn hover_value(attr: &DataAttribute, value_offset: usize, full_text: &str) -> Op
     }
 
     if let Some(sig_content) = signals::find_signal_name_at_offset(bytes, value_offset) {
-        return hover_signal_name(&sig_content, full_text);
+        return hover_signal_name(&sig_content, analysis);
     }
 
     None
 }
 
-fn hover_signal_name(name: &str, full_text: &str) -> Option<Hover> {
-    let analysis = crate::analysis::signals::analyze_signals(full_text);
+fn hover_signal_name(name: &str, analysis: &SignalAnalysis) -> Option<Hover> {
     let top_name = name.split('.').next().unwrap_or("");
 
     if let Some(defs) = analysis.definitions.get(top_name) {
@@ -233,7 +230,8 @@ mod tests {
             line: 0,
             character: dollar_offset as u32,
         };
-        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1, &analysis);
         assert!(
             hover.is_some(),
             "expected hover at offset {}",
@@ -259,7 +257,8 @@ mod tests {
             line: 0,
             character: 7,
         };
-        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1, &analysis);
         assert!(hover.is_some(), "expected hover at char 7");
         let hover = hover.unwrap();
         let contents = match &hover.contents {

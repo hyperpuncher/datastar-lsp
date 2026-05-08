@@ -20,6 +20,24 @@ pub struct DataAttribute {
     pub value_start: Option<usize>,
 }
 
+impl DataAttribute {
+    /// If `offset` is inside the attribute value, returns the offset
+    /// relative to the first content byte (past the opening quote).
+    pub fn value_rel_offset(&self, offset: usize) -> Option<usize> {
+        let value = self.value.as_ref()?;
+        let value_start = self.value_start?;
+        let value_end = value_start + value.len() + 2;
+        if offset < value_start || offset > value_end {
+            return None;
+        }
+        let rel = offset.saturating_sub(value_start + 1);
+        if rel >= value.len() {
+            return None;
+        }
+        Some(rel)
+    }
+}
+
 /// Parses HTML-like source and returns all Datastar data-* attributes.
 pub fn parse_html(source: &[u8]) -> Result<(Tree, Vec<DataAttribute>)> {
     parse_with(source, tree_sitter_html::LANGUAGE.into())

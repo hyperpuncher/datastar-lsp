@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
 use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::{self, analyze_signals};
+use crate::analysis::signals::{self, SignalAnalysis};
 use crate::line_index::LineIndex;
 
 /// Produce workspace edits to rename a signal across all open documents.
@@ -13,10 +13,10 @@ pub fn rename_signal(
     position: Position,
     uri: &Url,
     new_name: &str,
+    analysis: &SignalAnalysis,
     project_index: Option<&ProjectIndex>,
 ) -> Option<HashMap<Url, Vec<TextEdit>>> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
-    let analysis = analyze_signals(line_index.text());
     let bytes = line_index.text().as_bytes();
 
     // Validate new_name is a valid signal identifier
@@ -213,7 +213,8 @@ mod tests {
 
         let uri = Url::parse("file:///test.html").expect("valid url");
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = rename_signal(&line_index, pos, &uri, "count", None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = rename_signal(&line_index, pos, &uri, "count", &analysis, None);
         assert!(result.is_some(), "should produce edits");
 
         let changes = result.unwrap();
@@ -235,7 +236,8 @@ mod tests {
 
         let uri = Url::parse("file:///test.html").expect("valid url");
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = rename_signal(&line_index, pos, &uri, "count", None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = rename_signal(&line_index, pos, &uri, "count", &analysis, None);
         assert!(result.is_some(), "should rename from definition position");
     }
 
@@ -250,7 +252,8 @@ mod tests {
 
         let uri = Url::parse("file:///test.html").expect("valid url");
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = rename_signal(&line_index, pos, &uri, "bar", None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = rename_signal(&line_index, pos, &uri, "bar", &analysis, None);
         assert!(result.is_none(), "undefined signal should not rename");
     }
 
@@ -265,7 +268,8 @@ mod tests {
 
         let uri = Url::parse("file:///test.html").expect("valid url");
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = rename_signal(&line_index, pos, &uri, "my name", None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = rename_signal(&line_index, pos, &uri, "my name", &analysis, None);
         assert!(result.is_none(), "invalid name should fail");
     }
 }

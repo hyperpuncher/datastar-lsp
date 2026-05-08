@@ -63,7 +63,8 @@ mod integration_tests {
             character: pos_dollar.1,
         };
         let line_index = datastar_lsp::line_index::LineIndex::new(html.clone());
-        let result = hover::generate(&line_index, pos, &attrs);
+        let analysis = datastar_lsp::analysis::signals::analyze_signals(&html);
+        let result = hover::generate(&line_index, pos, &attrs, &analysis);
         assert!(result.is_some(), "should hover on $counter");
     }
 

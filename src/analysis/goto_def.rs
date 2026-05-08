@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
 
 use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::{self, analyze_signals};
+use crate::analysis::signals::{self, SignalAnalysis};
 use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
 
@@ -12,45 +12,23 @@ pub fn goto_definition(
     position: Position,
     uri: &Url,
     attrs: &[DataAttribute],
+    analysis: &SignalAnalysis,
     project_index: Option<&ProjectIndex>,
 ) -> Option<GotoDefinitionResponse> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     // Check if cursor is inside a signal reference in an attribute value
     for attr in attrs {
-        let value = match attr.value.as_ref() {
-            Some(v) => v,
+        let rel_offset = match attr.value_rel_offset(offset) {
+            Some(r) => r,
             None => continue,
         };
-        let value_start = match attr.value_start {
-            Some(s) => s,
-            None => continue,
-        };
-        let value_end = value_start + value.len() + 2;
 
-        if offset < value_start || offset > value_end {
-            continue;
-        }
+        let bytes = attr.value.as_ref().map(|v| v.as_bytes()).unwrap_or(b"");
 
-        let rel_offset = offset - value_start - 1;
-        if rel_offset >= value.len() {
-            continue;
-        }
-
-        let bytes = value.as_bytes();
-
-        // Check for $signal reference
-        if bytes[rel_offset] == b'$' {
-            if let Some(signal_name) = signals::find_signal_name_at_offset(bytes, rel_offset) {
-                let top_name = signal_name.split('.').next().unwrap_or("");
-                return find_signal_definition(line_index, top_name, uri, project_index);
-            }
-        }
-
-        // Check if cursor is inside a signal name (e.g. after $foo)
         if let Some(signal_name) = signals::find_signal_name_at_offset(bytes, rel_offset) {
             let top_name = signal_name.split('.').next().unwrap_or("");
-            return find_signal_definition(line_index, top_name, uri, project_index);
+            return find_signal_definition(line_index, top_name, uri, analysis, project_index);
         }
     }
 
@@ -63,10 +41,9 @@ fn find_signal_definition(
     line_index: &LineIndex,
     top_name: &str,
     uri: &Url,
+    analysis: &SignalAnalysis,
     project_index: Option<&ProjectIndex>,
 ) -> Option<GotoDefinitionResponse> {
-    let analysis = analyze_signals(line_index.text());
-
     // Try local first
     if let Some(defs) = analysis.definitions.get(top_name) {
         let def = defs.first()?;
@@ -133,7 +110,8 @@ mod tests {
         };
 
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
         assert!(result.is_some(), "should find definition for $foo");
 
         if let GotoDefinitionResponse::Scalar(loc) = result.unwrap() {
@@ -160,7 +138,8 @@ mod tests {
         };
 
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
         assert!(
             result.is_none(),
             "undefined signal should have no definition"
@@ -180,7 +159,8 @@ mod tests {
         };
 
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, None);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
         assert!(result.is_some(), "should find definition for $count");
     }
 }

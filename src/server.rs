@@ -127,11 +127,16 @@ impl LanguageServer for Backend {
             Some(li) => li,
             None => return Ok(None),
         };
+        let analysis = match self.project_index.analysis(uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
 
         let result = hover::generate(
             &line_index,
             position,
             &self.project_index.attrs(uri).unwrap_or_default(),
+            &analysis,
         );
 
         if self.doc_version.load(Ordering::Acquire) != version {
@@ -177,14 +182,18 @@ impl LanguageServer for Backend {
             Some(li) => li,
             None => return Ok(None),
         };
-
         let attrs = self.project_index.attrs(uri).unwrap_or_default();
+        let analysis = match self.project_index.analysis(uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
 
         let result = goto_def::goto_definition(
             &line_index,
             position,
             uri,
             &attrs,
+            &analysis,
             Some(&self.project_index),
         );
         if self.is_stale(version) {
@@ -202,11 +211,16 @@ impl LanguageServer for Backend {
             Some(li) => li,
             None => return Ok(None),
         };
+        let analysis = match self.project_index.analysis(uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
 
         let result = Some(references::find_references(
             &line_index,
             position,
             uri,
+            &analysis,
             Some(&self.project_index),
         ));
         if self.is_stale(version) {
@@ -242,12 +256,17 @@ impl LanguageServer for Backend {
             Some(li) => li,
             None => return Ok(None),
         };
+        let analysis = match self.project_index.analysis(uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
 
         let result = rename::rename_signal(
             &line_index,
             position,
             uri,
             new_name,
+            &analysis,
             Some(&self.project_index),
         );
         if self.is_stale(version) {

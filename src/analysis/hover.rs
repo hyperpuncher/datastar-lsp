@@ -99,6 +99,19 @@ fn hover_value(
         return hover_action(value, value_offset);
     }
 
+    // Cursor inside an @action name — scan backward for @
+    if value_offset < bytes.len()
+        && (bytes[value_offset].is_ascii_alphanumeric() || bytes[value_offset] == b'_')
+    {
+        let mut start = value_offset;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start > 0 && bytes[start - 1] == b'@' {
+            return hover_action(value, start - 1);
+        }
+    }
+
     if let Some(sig_content) = signals::find_signal_name_at_offset(bytes, value_offset) {
         return hover_signal_name(&sig_content, analysis);
     }

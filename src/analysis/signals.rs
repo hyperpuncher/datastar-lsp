@@ -222,8 +222,24 @@ pub fn analyze_signals(text: &str) -> SignalAnalysis {
     }
 
     // Scan for signal references: $foo, $foo.bar, $foo.bar.baz
+    // Skip HTML comments: <!-- ... -->
     i = 0;
+    let mut in_comment = false;
     while i < bytes.len() {
+        if !in_comment && i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
+            in_comment = true;
+            i += 4;
+            continue;
+        }
+        if in_comment && i + 3 <= bytes.len() && &bytes[i..i + 3] == b"-->" {
+            in_comment = false;
+            i += 3;
+            continue;
+        }
+        if in_comment {
+            i += 1;
+            continue;
+        }
         if bytes[i] == b'$' && i + 1 < bytes.len() {
             let next = bytes[i + 1];
             if next.is_ascii_alphabetic() || next == b'_' {

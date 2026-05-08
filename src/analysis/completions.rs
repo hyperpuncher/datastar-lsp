@@ -20,7 +20,7 @@ pub fn generate(ctx: &CompletionContext) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     // Determine what kind of completion is needed based on cursor position
-    let cursor_offset = position_to_byte_offset(&ctx.text, ctx.position);
+    let cursor_offset = crate::util::position_to_byte_offset(&ctx.text, ctx.position);
 
     if let Some(attr) = find_attribute_at_offset(&ctx.data_attrs, cursor_offset) {
         let attr_registry = attributes::all();
@@ -293,29 +293,6 @@ fn find_attribute_at_offset(attrs: &[DataAttribute], offset: usize) -> Option<&D
         .find(|a| offset >= a.name_start && offset <= a.name_start + a.raw_name.len() + 100)
 }
 
-pub fn position_to_byte_offset(text: &str, pos: Position) -> usize {
-    let mut line = 0u32;
-    let mut byte_offset = 0usize;
-
-    for (i, c) in text.char_indices() {
-        if line == pos.line {
-            // Count characters on this line up to pos.character
-            for (char_count, (j, _ch)) in text[i..].char_indices().enumerate() {
-                if char_count as u32 >= pos.character {
-                    return i + j;
-                }
-            }
-            return text.len();
-        }
-        if c == '\n' {
-            line += 1;
-            byte_offset = i + 1;
-        }
-    }
-
-    byte_offset
-}
-
 fn deduplicate_and_sort(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
     let mut seen = std::collections::BTreeSet::new();
     let mut result: Vec<CompletionItem> = Vec::new();
@@ -346,20 +323,5 @@ mod tests {
         let signals = complete_signals(html, &parsed.1);
         assert!(signals.iter().any(|s| s.label == "$foo"));
         assert!(signals.iter().any(|s| s.label == "$bar"));
-    }
-
-    #[test]
-    fn test_position_to_byte_offset() {
-        let text = "line1\nline2\nline3";
-        let pos = position_to_byte_offset(
-            text,
-            Position {
-                line: 1,
-                character: 2,
-            },
-        );
-        // "line2" starts at byte 6 ('\n' after "line1"), char 2 is 'n' at byte 8
-        assert_eq!(pos, 8);
-        assert_eq!(&text[pos..pos + 1], "n");
     }
 }

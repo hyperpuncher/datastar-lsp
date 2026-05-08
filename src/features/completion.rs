@@ -1,1 +1,0 @@
-// CompletionProvider implementation

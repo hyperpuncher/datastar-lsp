@@ -14,7 +14,7 @@ pub fn rename_signal(
     new_name: &str,
     project_index: Option<&ProjectIndex>,
 ) -> Option<HashMap<Url, Vec<TextEdit>>> {
-    let offset = super::completions::position_to_byte_offset(text, position);
+    let offset = crate::util::position_to_byte_offset(text, position);
     let analysis = analyze_signals(text);
     let bytes = text.as_bytes();
 
@@ -49,7 +49,7 @@ pub fn rename_signal(
     // Rename in definitions
     if let Some(defs) = analysis.definitions.get(&old_name) {
         for def in defs {
-            if let Some(edit) = make_definition_edit(text, &def, &old_name, new_name) {
+            if let Some(edit) = make_definition_edit(text, def, &old_name, new_name) {
                 edits.push(edit);
             }
         }
@@ -59,7 +59,7 @@ pub fn rename_signal(
     for ref_ in &analysis.references {
         let ref_top = ref_.name.split('.').next().unwrap_or("");
         if ref_top == old_name {
-            let start = byte_to_position(text, ref_.byte_offset);
+            let start = crate::util::byte_to_position(text, ref_.byte_offset);
             let end = Position {
                 line: start.line,
                 character: start.character + ref_.name.len() as u32 + 1,
@@ -78,12 +78,12 @@ pub fn rename_signal(
             if cross_uri == uri {
                 continue;
             }
-            let (doc_text, analysis) = &*entry.value();
+            let (doc_text, analysis) = entry.value();
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
             for ref_ in &analysis.references {
                 let ref_top = ref_.name.split('.').next().unwrap_or("");
                 if ref_top == old_name {
-                    let pos = byte_to_position(doc_text, ref_.byte_offset);
+                    let pos = crate::util::byte_to_position(doc_text, ref_.byte_offset);
                     cross_edits.push(TextEdit {
                         range: tower_lsp::lsp_types::Range {
                             start: pos,
@@ -144,7 +144,7 @@ fn make_definition_edit(
         return None;
     }
 
-    let start_pos = byte_to_position(text, name_start);
+    let start_pos = crate::util::byte_to_position(text, name_start);
     let end_pos = Position {
         line: start_pos.line,
         character: start_pos.character + name_end as u32,
@@ -277,29 +277,6 @@ fn is_valid_signal_name(name: &str) -> bool {
     }
     name.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += c.len_utf8() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
-    }
 }
 
 #[cfg(test)]

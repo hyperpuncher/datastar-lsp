@@ -12,6 +12,12 @@ pub struct ProjectIndex {
     pub documents: Arc<DashMap<Url, (String, SignalAnalysis)>>,
 }
 
+impl Default for ProjectIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProjectIndex {
     pub fn new() -> Self {
         Self {

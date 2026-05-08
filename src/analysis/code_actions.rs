@@ -1,6 +1,5 @@
 use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, Position, Range, TextEdit,
-    WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, Range, TextEdit, WorkspaceEdit,
 };
 
 /// Generate code actions for a given diagnostic.
@@ -49,7 +48,7 @@ fn generate_define_signal(
     // or at the beginning of the document
     let insertion_offset = find_signal_insertion_point(text);
 
-    let insert_pos = byte_to_position(text, insertion_offset);
+    let insert_pos = crate::util::byte_to_position(text, insertion_offset);
     let edit_text = format!("\n\t<div data-signals:{}=\"\" hidden></div>", signal_name);
 
     let edit = TextEdit {
@@ -166,29 +165,6 @@ fn generate_suggest_attr(
         edit: None,
         ..Default::default()
     })]
-}
-
-fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += c.len_utf8() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
-    }
 }
 
 /// Helper to clone a Diagnostic with default fields filled in.

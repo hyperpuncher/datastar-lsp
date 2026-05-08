@@ -13,7 +13,7 @@ pub fn goto_definition(
     attrs: &[DataAttribute],
     project_index: Option<&ProjectIndex>,
 ) -> Option<GotoDefinitionResponse> {
-    let offset = super::completions::position_to_byte_offset(text, position);
+    let offset = crate::util::position_to_byte_offset(text, position);
 
     // Check if cursor is inside a signal reference in an attribute value
     for attr in attrs {
@@ -142,7 +142,7 @@ fn find_signal_definition(
     // Try local first
     if let Some(defs) = analysis.definitions.get(top_name) {
         let def = defs.first()?;
-        let pos = byte_to_position(text, def.byte_offset);
+        let pos = crate::util::byte_to_position(text, def.byte_offset);
         return Some(GotoDefinitionResponse::Scalar(Location {
             uri: uri.clone(),
             range: Range {
@@ -162,7 +162,7 @@ fn find_signal_definition(
             let (cross_uri, byte_offset) = &cross_defs[0];
             if let Some(entry) = index.documents.get(cross_uri) {
                 let (doc_text, _) = &*entry;
-                let pos = byte_to_position(doc_text, *byte_offset);
+                let pos = crate::util::byte_to_position(doc_text, *byte_offset);
                 return Some(GotoDefinitionResponse::Scalar(Location {
                     uri: cross_uri.clone(),
                     range: Range {
@@ -178,29 +178,6 @@ fn find_signal_definition(
     }
 
     None
-}
-
-fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += c.len_utf8() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
-    }
 }
 
 #[cfg(test)]

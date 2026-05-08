@@ -1,1 +1,0 @@
-// HoverProvider implementation

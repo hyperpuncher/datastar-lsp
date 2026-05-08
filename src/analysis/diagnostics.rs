@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use crate::data::{actions, attributes, modifiers};
 use crate::parser::html::{self, DataAttribute};
@@ -60,7 +60,7 @@ fn check_attribute_validity(
         Some(d) => d,
         None => {
             // Unknown plugin name
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
@@ -82,7 +82,7 @@ fn check_attribute_validity(
     // Check key requirement
     match (def.key_req, &attr.key) {
         (attributes::Requirement::Must, None) => {
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
@@ -100,7 +100,7 @@ fn check_attribute_validity(
         }
         (attributes::Requirement::Denied, Some(key)) => {
             let key_pos = attr.raw_name.find(':').unwrap_or(0);
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.name_start + key_pos,
                 attr.name_start + key_pos + 1 + key.len(),
@@ -117,7 +117,7 @@ fn check_attribute_validity(
             });
         }
         (attributes::Requirement::Exclusive, Some(_)) if attr.value.is_some() => {
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
@@ -139,7 +139,7 @@ fn check_attribute_validity(
     // Check value requirement
     match (def.value_req, &attr.value) {
         (attributes::Requirement::Must, None) => {
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
@@ -156,7 +156,7 @@ fn check_attribute_validity(
             });
         }
         (attributes::Requirement::Denied, Some(_)) => {
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 attr.value_start.unwrap_or(attr.name_start),
                 attr.value_start
@@ -185,7 +185,7 @@ fn check_attribute_validity(
             if let Some(pos) = mod_pos {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = byte_range_to_lsp_range(text, start, end);
+                let range = crate::util::byte_range_to_lsp_range(text, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
@@ -207,7 +207,7 @@ fn check_attribute_validity(
             if let Some(pos) = mod_pos {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = byte_range_to_lsp_range(text, start, end);
+                let range = crate::util::byte_range_to_lsp_range(text, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
@@ -264,7 +264,7 @@ fn check_expression_actions(
                         let value_start = attr.value_start.unwrap_or(0);
                         let start = value_start + 1 + i; // +1 for opening quote
                         let end = start + (j - i);
-                        let range = byte_range_to_lsp_range(text, start, end);
+                        let range = crate::util::byte_range_to_lsp_range(text, start, end);
                         diagnostics.push(Diagnostic {
                             range,
                             severity: Some(DiagnosticSeverity::WARNING),
@@ -301,7 +301,7 @@ fn check_undefined_signals(
             continue;
         }
         if !analysis.top_level_names.contains(top_name) {
-            let range = byte_range_to_lsp_range(
+            let range = crate::util::byte_range_to_lsp_range(
                 text,
                 ref_.byte_offset,
                 ref_.byte_offset + 1 + ref_.name.len(),
@@ -317,36 +317,6 @@ fn check_undefined_signals(
                 ..Default::default()
             });
         }
-    }
-}
-
-/// Convert byte offsets to LSP range (line/character).
-fn byte_range_to_lsp_range(text: &str, start_byte: usize, end_byte: usize) -> Range {
-    let start = byte_to_position(text, start_byte.min(text.len()));
-    let end = byte_to_position(text, end_byte.min(text.len()));
-    Range { start, end }
-}
-
-fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += c.len_utf8() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
     }
 }
 

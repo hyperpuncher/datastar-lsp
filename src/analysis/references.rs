@@ -11,7 +11,7 @@ pub fn find_references(
     uri: &Url,
     project_index: Option<&ProjectIndex>,
 ) -> Vec<Location> {
-    let offset = super::completions::position_to_byte_offset(text, position);
+    let offset = crate::util::position_to_byte_offset(text, position);
     let analysis = analyze_signals(text);
     let bytes = text.as_bytes();
 
@@ -42,7 +42,7 @@ pub fn find_references(
     // Add definition locations
     if let Some(defs) = analysis.definitions.get(&top_name) {
         for def in defs {
-            let pos = byte_to_position(text, def.byte_offset);
+            let pos = crate::util::byte_to_position(text, def.byte_offset);
             locations.push(Location {
                 uri: uri.clone(),
                 range: Range {
@@ -60,7 +60,7 @@ pub fn find_references(
     for ref_ in &analysis.references {
         let ref_top = ref_.name.split('.').next().unwrap_or("");
         if ref_top == top_name {
-            let pos = byte_to_position(text, ref_.byte_offset);
+            let pos = crate::util::byte_to_position(text, ref_.byte_offset);
             locations.push(Location {
                 uri: uri.clone(),
                 range: Range {
@@ -82,7 +82,7 @@ pub fn find_references(
             }
             if let Some(entry) = index.documents.get(&cross_uri) {
                 let (doc_text, _) = &*entry;
-                let pos = byte_to_position(doc_text, byte_offset);
+                let pos = crate::util::byte_to_position(doc_text, byte_offset);
                 locations.push(Location {
                     uri: cross_uri.clone(),
                     range: Range {
@@ -115,7 +115,7 @@ fn find_signal_name_at_offset(bytes: &[u8], offset: usize) -> Option<String> {
     let mut start = offset;
     loop {
         if bytes[start] == b'$' {
-            if offset >= start + 1 {
+            if offset > start {
                 // Cursor is after $ — extract from $ onward
                 let full = extract_signal_name_forward(bytes, start + 1);
                 if let Some(_name) = &full {
@@ -178,39 +178,9 @@ fn extract_signal_name_forward(bytes: &[u8], start: usize) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += c.len_utf8() as u32;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn loc_line(locs: &[Location]) -> Vec<u32> {
-        let mut lines: Vec<_> = locs.iter().map(|l| l.range.start.line).collect();
-        lines.sort();
-        lines.dedup();
-        lines
-    }
 
     #[test]
     fn test_find_references() {

@@ -5,7 +5,7 @@ use crate::parser::html::DataAttribute;
 
 /// Generate hover information for a position in the document.
 pub fn generate(text: &str, position: Position, attrs: &[DataAttribute]) -> Option<Hover> {
-    let offset = super::completions::position_to_byte_offset(text, position);
+    let offset = crate::util::position_to_byte_offset(text, position);
 
     for attr in attrs {
         if offset >= attr.name_start && offset <= attr.name_start + attr.raw_name.len() {

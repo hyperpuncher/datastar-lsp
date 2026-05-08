@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation deps
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/datastar-lsp dist/datastar-lsp-${{ matrix.target }}
+          strip dist/datastar-lsp-${{ matrix.target }} || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/datastar-lsp-${{ matrix.target }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: Rename binaries
+        run: |
+          mv dist/x86_64-unknown-linux-gnu/datastar-lsp-x86_64-unknown-linux-gnu dist/datastar-lsp-linux-x64
+          mv dist/aarch64-unknown-linux-gnu/datastar-lsp-aarch64-unknown-linux-gnu dist/datastar-lsp-linux-arm64
+          mv dist/x86_64-apple-darwin/datastar-lsp-x86_64-apple-darwin dist/datastar-lsp-darwin-x64
+          mv dist/aarch64-apple-darwin/datastar-lsp-aarch64-apple-darwin dist/datastar-lsp-darwin-arm64
+          rm -rf dist/x86_64-unknown-linux-gnu dist/aarch64-unknown-linux-gnu
+          rm -rf dist/x86_64-apple-darwin dist/aarch64-apple-darwin
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

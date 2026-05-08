@@ -158,10 +158,11 @@ fn generate_add_key(uri: &tower_lsp::lsp_types::Url, range: Range) -> Vec<CodeAc
     })]
 }
 
-/// Code action: Suggest closest attribute name for unknown attribute.
+/// Code action: Inform the user to check the attribute reference.
 fn generate_suggest_attr() -> Vec<CodeActionOrCommand> {
+    // No automatic fix — user should consult docs for the correct attribute name.
     vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Check Datastar attribute reference".to_string(),
+        title: "Unknown Datastar attribute — check reference at data-star.dev".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: None,
         edit: None,

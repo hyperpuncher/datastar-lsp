@@ -175,6 +175,7 @@ fn make_definition_edit(
 
 /// Check if cursor is on a signal definition name (after data-signals:FOO).
 fn find_definition_name_at(bytes: &[u8], offset: usize) -> Option<String> {
+    // backward scan for ':' preceded by a signal-definer plugin name
     let mut i = offset;
     while i > 0 {
         if bytes[i] == b':' {

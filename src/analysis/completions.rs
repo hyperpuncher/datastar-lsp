@@ -294,9 +294,10 @@ fn complete_modifiers(
 }
 
 fn find_attribute_at_offset(attrs: &[DataAttribute], offset: usize) -> Option<&DataAttribute> {
-    attrs
-        .iter()
-        .find(|a| offset >= a.name_start && offset <= a.name_start + a.raw_name.len() + 100)
+    attrs.iter().find(|a| {
+        offset >= a.name_start && offset <= a.name_start + a.raw_name.len()
+            || a.value_start.is_some_and(|vs| offset >= vs)
+    })
 }
 
 fn deduplicate_and_sort(items: Vec<CompletionItem>) -> Vec<CompletionItem> {

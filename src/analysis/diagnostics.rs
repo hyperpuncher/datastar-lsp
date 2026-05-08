@@ -1,6 +1,7 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use crate::analysis::project_index::ProjectIndex;
+use crate::analysis::signals::SignalAnalysis;
 use crate::data::{actions, attributes, modifiers};
 use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
@@ -10,6 +11,7 @@ use crate::parser::html::DataAttribute;
 pub fn generate(
     line_index: &LineIndex,
     data_attrs: &[DataAttribute],
+    signal_analysis: &SignalAnalysis,
     project_index: Option<&ProjectIndex>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -30,14 +32,8 @@ pub fn generate(
         check_expression_actions(attr, &action_registry, line_index, &mut diagnostics);
     }
 
-    // Signal reference diagnostics — scan the full text for signal references
-    let signal_analysis = crate::analysis::signals::analyze_signals(line_index.text());
-    check_undefined_signals(
-        &signal_analysis,
-        line_index,
-        &mut diagnostics,
-        project_index,
-    );
+    // Signal reference diagnostics
+    check_undefined_signals(signal_analysis, line_index, &mut diagnostics, project_index);
 
     diagnostics
 }
@@ -332,7 +328,8 @@ mod tests {
     fn diags_for(html: &str) -> Vec<Diagnostic> {
         let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
         let line_index = crate::line_index::LineIndex::new(html.to_string());
-        generate(&line_index, &parsed.1, None)
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        generate(&line_index, &parsed.1, &analysis, None)
     }
 
     #[test]

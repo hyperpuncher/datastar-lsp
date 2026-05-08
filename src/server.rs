@@ -298,7 +298,9 @@ impl Backend {
             None => return,
         };
         let attrs = self.project_index.attrs(uri).unwrap_or_default();
-        let diags = diagnostics::generate(&line_index, &attrs, Some(&self.project_index));
+        let analysis = self.project_index.analysis(uri).unwrap_or_default();
+        let diags =
+            diagnostics::generate(&line_index, &attrs, &analysis, Some(&self.project_index));
         self.client
             .publish_diagnostics(uri.clone(), diags, None)
             .await;

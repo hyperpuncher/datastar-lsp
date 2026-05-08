@@ -38,7 +38,11 @@ jobs:
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             BIN="datastar-lsp.exe"
           fi
-          cp "target/${{ matrix.target }}/release/$BIN" "dist/datastar-lsp-${{ matrix.target }}"
+          EXT=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            EXT=".exe"
+          fi
+          cp "target/${{ matrix.target }}/release/$BIN" "dist/datastar-lsp-${{ matrix.target }}$EXT"
           strip "dist/datastar-lsp-${{ matrix.target }}" || true
 
       - name: Upload artifact

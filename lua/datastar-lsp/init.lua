@@ -91,7 +91,7 @@ function M._download_binary(version, install_dir, bin_path)
 		return false
 	end
 
-	vim.fn.setfperm(bin_path, "rwx", "rx", "rx")
+	vim.fn.setfperm(bin_path, "rwxr-xr-x")
 	vim.notify("datastar-lsp: installed to " .. bin_path, vim.log.levels.INFO)
 	return true
 end

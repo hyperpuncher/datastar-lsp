@@ -1,11 +1,17 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
+use crate::analysis::signals;
 use crate::data::{actions, attributes};
+use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
 
 /// Generate hover information for a position in the document.
-pub fn generate(text: &str, position: Position, attrs: &[DataAttribute]) -> Option<Hover> {
-    let offset = crate::util::position_to_byte_offset(text, position);
+pub fn generate(
+    line_index: &LineIndex,
+    position: Position,
+    attrs: &[DataAttribute],
+) -> Option<Hover> {
+    let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     for attr in attrs {
         if offset >= attr.name_start && offset <= attr.name_start + attr.raw_name.len() {
@@ -14,7 +20,11 @@ pub fn generate(text: &str, position: Position, attrs: &[DataAttribute]) -> Opti
         if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
             let value_end = value_start + value.len() + 2;
             if offset >= value_start && offset <= value_end {
-                return hover_value(attr, offset - value_start - 1, text);
+                return hover_value(
+                    attr,
+                    offset.saturating_sub(value_start + 1),
+                    line_index.text(),
+                );
             }
         }
     }
@@ -80,78 +90,22 @@ fn hover_value(attr: &DataAttribute, value_offset: usize, full_text: &str) -> Op
     let bytes = value.as_bytes();
 
     if value_offset < bytes.len() && bytes[value_offset] == b'$' {
-        return hover_signal(value, value_offset, full_text);
+        let (name, _) = signals::read_signal_token(bytes, value_offset + 1);
+        if !name.is_empty() {
+            return hover_signal_name(name, full_text);
+        }
+        return None;
     }
 
     if value_offset < bytes.len() && bytes[value_offset] == b'@' {
         return hover_action(value, value_offset);
     }
 
-    if let Some(sig_content) = find_signal_at_offset(value, value_offset) {
+    if let Some(sig_content) = signals::find_signal_name_at_offset(bytes, value_offset) {
         return hover_signal_name(&sig_content, full_text);
     }
 
     None
-}
-
-fn find_signal_at_offset(value: &str, offset: usize) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut start = offset;
-    while start > 0 {
-        if bytes[start - 1] == b'$' {
-            let name_start = start;
-            let mut end = name_start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric()
-                    || bytes[end] == b'-'
-                    || bytes[end] == b'_'
-                    || bytes[end] == b'.'
-                    || bytes[end] == b'['
-                    || bytes[end] == b']')
-            {
-                end += 1;
-            }
-            if end > name_start {
-                let raw = std::str::from_utf8(&bytes[name_start..end]).unwrap_or("");
-                let trimmed = raw
-                    .trim_end_matches("++")
-                    .trim_end_matches("--")
-                    .trim_end_matches('+')
-                    .trim_end_matches('-')
-                    .trim_end_matches('.');
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-            break;
-        }
-        start = start.checked_sub(1)?;
-    }
-    None
-}
-
-fn hover_signal(value: &str, offset: usize, full_text: &str) -> Option<Hover> {
-    let bytes = value.as_bytes();
-    let mut end = offset + 1;
-    while end < bytes.len()
-        && (bytes[end].is_ascii_alphanumeric()
-            || bytes[end] == b'-'
-            || bytes[end] == b'_'
-            || bytes[end] == b'.'
-            || bytes[end] == b'['
-            || bytes[end] == b']')
-    {
-        end += 1;
-    }
-    let raw_name = std::str::from_utf8(&bytes[offset + 1..end]).unwrap_or("");
-    // Trim trailing ++/-- postfix operators
-    let signal_name = raw_name
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('+')
-        .trim_end_matches('-')
-        .trim_end_matches('.');
-    hover_signal_name(signal_name, full_text)
 }
 
 fn hover_signal_name(name: &str, full_text: &str) -> Option<Hover> {
@@ -279,7 +233,7 @@ mod tests {
             line: 0,
             character: dollar_offset as u32,
         };
-        let hover = generate(html, pos, &parsed.1);
+        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1);
         assert!(
             hover.is_some(),
             "expected hover at offset {}",
@@ -305,7 +259,7 @@ mod tests {
             line: 0,
             character: 7,
         };
-        let hover = generate(html, pos, &parsed.1);
+        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1);
         assert!(hover.is_some(), "expected hover at char 7");
         let hover = hover.unwrap();
         let contents = match &hover.contents {

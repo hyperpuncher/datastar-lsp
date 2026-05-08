@@ -14,7 +14,7 @@ pub fn byte_to_position(text: &str, byte_offset: usize) -> Position {
             line += 1;
             col = 0;
         } else {
-            col += c.len_utf8() as u32;
+            col += 1;
         }
     }
 
@@ -30,12 +30,11 @@ pub fn position_to_byte_offset(text: &str, pos: Position) -> usize {
 
     for (i, c) in text.char_indices() {
         if line == pos.line {
-            let mut char_count = 0u32;
-            for (j, _ch) in text[i..].char_indices() {
+            for (char_count, (j, _ch)) in text[i..].char_indices().enumerate() {
+                let char_count = char_count as u32;
                 if char_count >= pos.character {
                     return i + j;
                 }
-                char_count += 1;
             }
             return text.len();
         }

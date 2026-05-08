@@ -24,7 +24,7 @@ pub fn generate(
     }
 
     if msg.starts_with("Unknown Datastar attribute") {
-        return generate_suggest_attr(uri, range);
+        return generate_suggest_attr();
     }
 
     vec![]
@@ -65,10 +65,10 @@ fn generate_define_signal(
     vec![CodeActionOrCommand::CodeAction(CodeAction {
         title: format!("Define signal '${}' at top of document", signal_name),
         kind: Some(CodeActionKind::QUICKFIX),
-        diagnostics: Some(vec![diagnostic::clone_diagnostic(&Diagnostic {
+        diagnostics: Some(vec![Diagnostic {
             message: msg.to_string(),
             ..Default::default()
-        })]),
+        }]),
         edit: Some(WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()
@@ -153,11 +153,7 @@ fn generate_add_key(uri: &tower_lsp::lsp_types::Url, range: Range) -> Vec<CodeAc
 }
 
 /// Code action: Suggest closest attribute name for unknown attribute.
-fn generate_suggest_attr(
-    _uri: &tower_lsp::lsp_types::Url,
-    _range: Range,
-) -> Vec<CodeActionOrCommand> {
-    // Just provide a hint to check the docs
+fn generate_suggest_attr() -> Vec<CodeActionOrCommand> {
     vec![CodeActionOrCommand::CodeAction(CodeAction {
         title: "Check Datastar attribute reference".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
@@ -165,12 +161,4 @@ fn generate_suggest_attr(
         edit: None,
         ..Default::default()
     })]
-}
-
-/// Helper to clone a Diagnostic with default fields filled in.
-mod diagnostic {
-    use tower_lsp::lsp_types::Diagnostic;
-    pub fn clone_diagnostic(_d: &Diagnostic) -> Diagnostic {
-        Diagnostic::default()
-    }
 }

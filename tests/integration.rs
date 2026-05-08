@@ -55,14 +55,15 @@ mod integration_tests {
     fn html_hover_on_signal() {
         let html = read_fixture("test.html");
         let (_, attrs) = parse_html(html.as_bytes()).unwrap();
-        let pos = html
-            .find("$counter")
-            .map(|i| Position {
-                line: 0,
-                character: i as u32,
-            })
-            .unwrap();
-        let result = hover::generate(&html, pos, &attrs);
+        let dollar_byte = html.find("$counter").unwrap();
+        let line_idx = datastar_lsp::line_index::LineIndex::new(html.clone());
+        let pos_dollar = line_idx.byte_to_position(dollar_byte);
+        let pos = Position {
+            line: pos_dollar.0,
+            character: pos_dollar.1,
+        };
+        let line_index = datastar_lsp::line_index::LineIndex::new(html.clone());
+        let result = hover::generate(&line_index, pos, &attrs);
         assert!(result.is_some(), "should hover on $counter");
     }
 

@@ -20,40 +20,12 @@ pub struct DataAttribute {
     pub value_start: Option<usize>,
 }
 
-/// Supported languages for HTML-like parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    Html,
-    Jsx,
-    Tsx,
-}
-
-impl Language {
-    pub fn from_file_extension(path: &str) -> Option<Self> {
-        if path.ends_with(".html")
-            || path.ends_with(".htm")
-            || path.ends_with(".templ")
-            || path.ends_with(".heex")
-            || path.ends_with(".blade")
-        {
-            Some(Language::Html)
-        } else if path.ends_with(".jsx") {
-            Some(Language::Jsx)
-        } else if path.ends_with(".tsx") {
-            Some(Language::Tsx)
-        } else {
-            // Default: try HTML, then TSX
-            None
-        }
-    }
-}
-
-/// Parses source and returns all Datastar data-* attributes found.
+/// Parses HTML-like source and returns all Datastar data-* attributes.
 pub fn parse_html(source: &[u8]) -> Result<(Tree, Vec<DataAttribute>)> {
     parse_with(source, tree_sitter_html::LANGUAGE.into())
 }
 
-/// Parse JSX source (also works for TSX).
+/// Parse JSX/TSX source.
 pub fn parse_jsx(source: &[u8]) -> Result<(Tree, Vec<DataAttribute>)> {
     parse_with(source, tree_sitter_typescript::LANGUAGE_TSX.into())
 }
@@ -325,7 +297,7 @@ mod tests {
     fn test_parse_jsx_attrs() {
         let source = br#"<input data-bind:q value="search" /><div data-show="$visible"></div>"#;
         let (_, attrs) = parse_jsx(source).unwrap();
-        assert!(attrs.len() >= 1, "got {} attrs: {:?}", attrs.len(), attrs);
+        assert!(!attrs.is_empty(), "got {} attrs: {:?}", attrs.len(), attrs);
         let names: Vec<_> = attrs.iter().map(|a| a.plugin_name.as_str()).collect();
         assert!(names.contains(&"bind"), "expected bind in {:?}", names);
     }

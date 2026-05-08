@@ -1,5 +1,76 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Trim trailing ++/--/+/-/. from signal reference names.
+pub fn trim_signal_postfix(name: &str) -> &str {
+    name.trim_end_matches("++")
+        .trim_end_matches("--")
+        .trim_end_matches('.')
+}
+
+/// Read a signal token from bytes starting at `start`. Returns (name, end_index).
+pub fn read_signal_token(bytes: &[u8], start: usize) -> (&str, usize) {
+    let mut end = start;
+    while end < bytes.len()
+        && (bytes[end].is_ascii_alphanumeric()
+            || bytes[end] == b'-'
+            || bytes[end] == b'_'
+            || bytes[end] == b'.')
+    {
+        end += 1;
+    }
+    let raw = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
+    (trim_signal_postfix(raw), end)
+}
+
+/// Check if cursor is on a $signal reference. Returns the full signal name.
+pub fn find_signal_name_at_offset(bytes: &[u8], offset: usize) -> Option<String> {
+    if offset >= bytes.len() {
+        return None;
+    }
+    if bytes[offset] == b'$' {
+        let (name, _) = read_signal_token(bytes, offset + 1);
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+        return None;
+    }
+    let mut start = offset;
+    loop {
+        if bytes[start] == b'$' {
+            if offset > start {
+                let (name, end) = read_signal_token(bytes, start + 1);
+                if offset < start + 1 + (end - start - 1) && !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+            return None;
+        }
+        if start == 0 {
+            break;
+        }
+        if !(bytes[start].is_ascii_alphanumeric()
+            || bytes[start] == b'-'
+            || bytes[start] == b'_'
+            || bytes[start] == b'.'
+            || bytes[start] == b'['
+            || bytes[start] == b']')
+        {
+            return None;
+        }
+        start -= 1;
+    }
+    None
+}
+
+/// Check if a string is a valid signal name.
+pub fn is_valid_signal_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Where a signal is defined in the DOM
 #[derive(Debug, Clone)]
 pub struct SignalDef {
@@ -18,7 +89,7 @@ pub struct SignalRef {
 }
 
 /// Result of analyzing a document's signals
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SignalAnalysis {
     /// All defined signals (from data-signals, data-bind, data-computed, data-ref, data-indicator)
     pub definitions: BTreeMap<String, Vec<SignalDef>>,
@@ -156,30 +227,14 @@ pub fn analyze_signals(text: &str) -> SignalAnalysis {
         if bytes[i] == b'$' && i + 1 < bytes.len() {
             let next = bytes[i + 1];
             if next.is_ascii_alphabetic() || next == b'_' {
-                let mut j = i + 1;
-                while j < bytes.len()
-                    && (bytes[j].is_ascii_alphanumeric()
-                        || bytes[j] == b'-'
-                        || bytes[j] == b'_'
-                        || bytes[j] == b'.'
-                        || bytes[j] == b'['
-                        || bytes[j] == b']')
-                {
-                    j += 1;
-                }
-                let raw_name = std::str::from_utf8(&bytes[i + 1..j]).unwrap_or("");
-                let signal_name = raw_name
-                    .trim_end_matches("++")
-                    .trim_end_matches("--")
-                    .trim_end_matches('+')
-                    .trim_end_matches('-');
+                let (signal_name, end) = read_signal_token(bytes, i + 1);
                 if !signal_name.is_empty() {
                     analysis.references.push(SignalRef {
                         name: signal_name.to_string(),
                         byte_offset: i,
                     });
                 }
-                i = j;
+                i = end;
                 continue;
             }
         }

@@ -3,12 +3,13 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::data::{actions, attributes};
+use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
 
 /// Context for generating completions at a cursor position
-pub struct CompletionContext {
-    /// Full document text
-    pub text: String,
+pub struct CompletionContext<'a> {
+    /// Document line index (has text + position conversion)
+    pub line_index: &'a LineIndex,
     /// Cursor position (line, character)
     pub position: Position,
     /// Parsed data attributes from the document
@@ -19,8 +20,9 @@ pub struct CompletionContext {
 pub fn generate(ctx: &CompletionContext) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
-    // Determine what kind of completion is needed based on cursor position
-    let cursor_offset = crate::util::position_to_byte_offset(&ctx.text, ctx.position);
+    let cursor_offset = ctx
+        .line_index
+        .position_to_byte_offset(ctx.position.line, ctx.position.character);
 
     if let Some(attr) = find_attribute_at_offset(&ctx.data_attrs, cursor_offset) {
         let attr_registry = attributes::all();
@@ -60,14 +62,14 @@ pub fn generate(ctx: &CompletionContext) -> Vec<CompletionItem> {
                 if relative_offset > 0 && relative_offset <= value.len() {
                     let before_cursor = &value[..relative_offset.min(value.len())];
                     if before_cursor.ends_with('$') || before_cursor.ends_with("$.") {
-                        items.extend(complete_signals(&ctx.text, &ctx.data_attrs));
+                        items.extend(complete_signals(ctx.line_index.text(), &ctx.data_attrs));
                     } else if before_cursor.ends_with('@') {
                         items.extend(complete_actions(&actions::all()));
                     } else if let Some(last_dollar) = before_cursor.rfind('$') {
                         // Cursor is inside a signal name like $foo|.bar
                         let after_dollar = &before_cursor[last_dollar + 1..];
                         if !after_dollar.contains(' ') && !after_dollar.contains('"') {
-                            items.extend(complete_signals(&ctx.text, &ctx.data_attrs));
+                            items.extend(complete_signals(ctx.line_index.text(), &ctx.data_attrs));
                         }
                     } else if let Some(last_at) = before_cursor.rfind('@') {
                         let after_at = &before_cursor[last_at + 1..];

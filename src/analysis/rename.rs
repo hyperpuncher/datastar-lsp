@@ -3,28 +3,30 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
 use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::analyze_signals;
+use crate::analysis::signals::{self, analyze_signals};
+use crate::line_index::LineIndex;
 
 /// Produce workspace edits to rename a signal across all open documents.
 /// Returns edits grouped by URI. Empty if cursor not on a defined signal.
 pub fn rename_signal(
-    text: &str,
+    line_index: &LineIndex,
     position: Position,
     uri: &Url,
     new_name: &str,
     project_index: Option<&ProjectIndex>,
 ) -> Option<HashMap<Url, Vec<TextEdit>>> {
-    let offset = crate::util::position_to_byte_offset(text, position);
-    let analysis = analyze_signals(text);
-    let bytes = text.as_bytes();
+    let offset = line_index.position_to_byte_offset(position.line, position.character);
+    let analysis = analyze_signals(line_index.text());
+    let bytes = line_index.text().as_bytes();
 
     // Validate new_name is a valid signal identifier
-    if !is_valid_signal_name(new_name) {
+    if !signals::is_valid_signal_name(new_name) {
         return None;
     }
 
     // Find which signal the cursor is on
-    let cursor_name = find_signal_name_at(bytes, offset);
+    let cursor_name = signals::find_signal_name_at_offset(bytes, offset)
+        .or_else(|| find_definition_name_at(bytes, offset));
     let old_name = match cursor_name {
         Some(ref name) => name.split('.').next().unwrap_or("").to_string(),
         None => return None,
@@ -49,7 +51,7 @@ pub fn rename_signal(
     // Rename in definitions
     if let Some(defs) = analysis.definitions.get(&old_name) {
         for def in defs {
-            if let Some(edit) = make_definition_edit(text, def, &old_name, new_name) {
+            if let Some(edit) = make_definition_edit(line_index, def, &old_name, new_name) {
                 edits.push(edit);
             }
         }
@@ -59,7 +61,11 @@ pub fn rename_signal(
     for ref_ in &analysis.references {
         let ref_top = ref_.name.split('.').next().unwrap_or("");
         if ref_top == old_name {
-            let start = crate::util::byte_to_position(text, ref_.byte_offset);
+            let (line, col) = line_index.byte_to_position(ref_.byte_offset);
+            let start = tower_lsp::lsp_types::Position {
+                line,
+                character: col,
+            };
             let end = Position {
                 line: start.line,
                 character: start.character + ref_.name.len() as u32 + 1,
@@ -73,17 +79,21 @@ pub fn rename_signal(
 
     // Cross-file rename: apply to references only
     if let Some(index) = project_index {
-        for entry in index.documents.iter() {
-            let cross_uri = entry.key();
-            if cross_uri == uri {
+        for entry in index.iter() {
+            let cross_uri = entry.key().clone();
+            if &cross_uri == uri {
                 continue;
             }
-            let (doc_text, analysis) = entry.value();
+            let (line_index, _, analysis) = entry.value();
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
             for ref_ in &analysis.references {
                 let ref_top = ref_.name.split('.').next().unwrap_or("");
                 if ref_top == old_name {
-                    let pos = crate::util::byte_to_position(doc_text, ref_.byte_offset);
+                    let (line, col) = line_index.byte_to_position(ref_.byte_offset);
+                    let pos = tower_lsp::lsp_types::Position {
+                        line,
+                        character: col,
+                    };
                     cross_edits.push(TextEdit {
                         range: tower_lsp::lsp_types::Range {
                             start: pos,
@@ -108,12 +118,12 @@ pub fn rename_signal(
 
 /// Create a TextEdit for renaming the signal name in a definition.
 fn make_definition_edit(
-    text: &str,
+    line_index: &LineIndex,
     def: &crate::analysis::signals::SignalDef,
     old_name: &str,
     new_name: &str,
 ) -> Option<TextEdit> {
-    let bytes = text.as_bytes();
+    let bytes = line_index.text().as_bytes();
     let def_offset = def.byte_offset;
 
     // Find the colon that separates plugin:name — it's the first colon
@@ -144,7 +154,11 @@ fn make_definition_edit(
         return None;
     }
 
-    let start_pos = crate::util::byte_to_position(text, name_start);
+    let (line, col) = line_index.byte_to_position(name_start);
+    let start_pos = tower_lsp::lsp_types::Position {
+        line,
+        character: col,
+    };
     let end_pos = Position {
         line: start_pos.line,
         character: start_pos.character + name_end as u32,
@@ -159,71 +173,22 @@ fn make_definition_edit(
     })
 }
 
-/// Find signal name at cursor position in raw bytes.
-fn find_signal_name_at(bytes: &[u8], offset: usize) -> Option<String> {
-    if offset >= bytes.len() {
-        return None;
-    }
-
-    // If directly on $, look forward
-    if bytes[offset] == b'$' {
-        return extract_signal_name_forward(bytes, offset + 1);
-    }
-
-    // Scan backward for $
-    let mut start = offset;
-    loop {
-        if bytes[start] == b'$' {
-            if offset > start {
-                return extract_signal_name_forward(bytes, start + 1);
-            }
-            return None;
-        }
-        if start == 0 {
-            break;
-        }
-        if !(bytes[start].is_ascii_alphanumeric()
-            || bytes[start] == b'-'
-            || bytes[start] == b'_'
-            || bytes[start] == b'.'
-            || bytes[start] == b'['
-            || bytes[start] == b']')
-        {
-            // Check if we're on a definition attribute name (data-signals:FOO)
-            return find_definition_name_at(bytes, offset);
-        }
-        start -= 1;
-    }
-
-    // If no $ found, check if cursor is on a definition name
-    find_definition_name_at(bytes, offset)
-}
-
 /// Check if cursor is on a signal definition name (after data-signals:FOO).
 fn find_definition_name_at(bytes: &[u8], offset: usize) -> Option<String> {
-    // Scan backward from offset to find ":"
     let mut i = offset;
     while i > 0 {
         if bytes[i] == b':' {
-            // Check what's before the colon — data-signals, data-bind, etc.
             let before = &bytes[..i];
-            let before_str = match std::str::from_utf8(before) {
-                Ok(s) => s,
-                Err(_) => return None,
-            };
-
+            let before_str = std::str::from_utf8(before).ok()?;
             let is_definer = before_str.ends_with("data-signals")
                 || before_str.ends_with("data-bind")
                 || before_str.ends_with("data-computed")
                 || before_str.ends_with("data-ref")
                 || before_str.ends_with("data-indicator");
             if is_definer {
-                // Extract name after ":"
-                let name = extract_signal_name_forward(bytes, i + 1);
-                if let Some(ref n) = name {
-                    if offset > i && offset <= i + 1 + n.len() {
-                        return name;
-                    }
+                let (name, _) = signals::read_signal_token(bytes, i + 1);
+                if !name.is_empty() && offset > i && offset <= i + 1 + name.len() {
+                    return Some(name.to_string());
                 }
             }
             return None;
@@ -231,52 +196,6 @@ fn find_definition_name_at(bytes: &[u8], offset: usize) -> Option<String> {
         i -= 1;
     }
     None
-}
-
-/// Extract signal name bytes starting at offset (after $ or after :).
-fn extract_signal_name_forward(bytes: &[u8], start: usize) -> Option<String> {
-    if start >= bytes.len() {
-        return None;
-    }
-
-    let first = bytes[start];
-    if !(first.is_ascii_alphabetic() || first == b'_') {
-        return None;
-    }
-
-    let mut end = start;
-    while end < bytes.len()
-        && (bytes[end].is_ascii_alphanumeric()
-            || bytes[end] == b'-'
-            || bytes[end] == b'_'
-            || bytes[end] == b'.')
-    {
-        end += 1;
-    }
-
-    if end <= start {
-        return None;
-    }
-
-    let raw = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('+')
-        .trim_end_matches('-')
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-fn is_valid_signal_name(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[cfg(test)]
@@ -293,7 +212,8 @@ mod tests {
         };
 
         let uri = Url::parse("file:///test.html").expect("valid url");
-        let result = rename_signal(html, pos, &uri, "count", None);
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let result = rename_signal(&line_index, pos, &uri, "count", None);
         assert!(result.is_some(), "should produce edits");
 
         let changes = result.unwrap();
@@ -314,7 +234,8 @@ mod tests {
         };
 
         let uri = Url::parse("file:///test.html").expect("valid url");
-        let result = rename_signal(html, pos, &uri, "count", None);
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let result = rename_signal(&line_index, pos, &uri, "count", None);
         assert!(result.is_some(), "should rename from definition position");
     }
 
@@ -328,7 +249,8 @@ mod tests {
         };
 
         let uri = Url::parse("file:///test.html").expect("valid url");
-        let result = rename_signal(html, pos, &uri, "bar", None);
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let result = rename_signal(&line_index, pos, &uri, "bar", None);
         assert!(result.is_none(), "undefined signal should not rename");
     }
 
@@ -342,7 +264,8 @@ mod tests {
         };
 
         let uri = Url::parse("file:///test.html").expect("valid url");
-        let result = rename_signal(html, pos, &uri, "my name", None);
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let result = rename_signal(&line_index, pos, &uri, "my name", None);
         assert!(result.is_none(), "invalid name should fail");
     }
 }

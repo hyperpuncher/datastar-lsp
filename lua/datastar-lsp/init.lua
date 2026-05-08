@@ -44,7 +44,7 @@ function M._get_binary_cmd(version)
 		return { name }
 	end
 
-	-- 3. Download prebuilt binary
+	-- 2. Download prebuilt binary
 	local install_dir = vim.fn.stdpath("data") .. "/datastar-lsp"
 	local bin_path = install_dir .. "/" .. name
 

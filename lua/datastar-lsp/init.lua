@@ -40,19 +40,7 @@ function M._get_binary_cmd(version)
 		name = "datastar-lsp.exe"
 	end
 
-	-- 1. Check local project build (development)
-	local cwd = vim.fn.getcwd()
-	local local_builds = {
-		cwd .. "/target/release/" .. name,
-		vim.fn.expand("~/projects/datastar-lsp/target/release/" .. name),
-	}
-	for _, path in ipairs(local_builds) do
-		if vim.fn.executable(path) == 1 then
-			return { path }
-		end
-	end
-
-	-- 2. Check if in PATH
+	-- 1. Check if in PATH
 	if vim.fn.executable(name) == 1 then
 		return { name }
 	end
@@ -80,9 +68,9 @@ function M._download_binary(version, install_dir, bin_path)
 
 	local url
 	if version == "latest" then
-		url = "https://github.com/igor/datastar-lsp/releases/latest/download/" .. filename
+		url = "https://github.com/hyperpuncher/datastar-lsp/releases/latest/download/" .. filename
 	else
-		url = "https://github.com/igor/datastar-lsp/releases/download/" .. version .. "/" .. filename
+		url = "https://github.com/hyperpuncher/datastar-lsp/releases/download/" .. version .. "/" .. filename
 	end
 
 	vim.notify("datastar-lsp: downloading " .. filename .. " ...", vim.log.levels.INFO)

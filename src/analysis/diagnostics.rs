@@ -308,10 +308,10 @@ fn check_undefined_signals(
             );
             diagnostics.push(Diagnostic {
                 range,
-                severity: Some(DiagnosticSeverity::WARNING),
+                severity: Some(DiagnosticSeverity::HINT),
                 source: Some("datastar".to_string()),
                 message: format!(
-                    "Undefined signal: '${}' is not defined in this document.",
+                    "Signal not defined locally: '${}'. It may be defined in a parent component.",
                     ref_.name
                 ),
                 ..Default::default()
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn test_undefined_signal() {
         let diags = generate(r#"<div data-text="$undefined"></div>"#);
-        assert!(diags.iter().any(|d| d.message.contains("Undefined signal")));
+        assert!(diags.iter().any(|d| d.message.contains("Signal not defined locally")));
     }
 
     #[test]

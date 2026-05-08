@@ -27,7 +27,13 @@ pub fn find_references(
         return vec![];
     }
 
-    if !analysis.top_level_names.contains(&top_name) {
+    // Check if signal is known (locally or cross-file)
+    let signal_exists = analysis.top_level_names.contains(&top_name)
+        || project_index
+            .map(|idx| !idx.find_definitions(&top_name, None).is_empty())
+            .unwrap_or(false);
+
+    if !signal_exists {
         return vec![];
     }
 

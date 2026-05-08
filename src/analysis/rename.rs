@@ -112,38 +112,40 @@ fn make_definition_edit(
     let bytes = text.as_bytes();
     let def_offset = def.byte_offset;
 
-    // The definition name appears after "data-SOMETHING:name" pattern
-    // Find the colon after the plugin name, then the name
+    // Find the colon that separates plugin:name — it's the first colon
+    // between "data-" and the first of =, '>' , ' ', or newline
     let after_data = &bytes[def_offset + 5..];
-    let colon_pos = after_data.iter().position(|&b| b == b':')?;
-    let name_start_relative = colon_pos + 1;
-    let name_start = def_offset + 5 + name_start_relative;
+    let eq_or_end = after_data
+        .iter()
+        .position(|&b| b == b'=' || b == b' ' || b == b'>' || b == b'\n' || b == b'\r')
+        .unwrap_or(after_data.len());
 
-    // The name might be followed by modifier (_key) or attribute end (=' ')
+    // Find colon within the attribute name bounds
+    let colon_pos = after_data[..eq_or_end]
+        .iter()
+        .position(|&b| b == b':')?;
+
+    // Name starts right after colon, ends at next __ or =/ / >
+    let name_start = def_offset + 5 + colon_pos + 1;
     let name_bytes = &bytes[name_start..];
-    let mut name_len = 0usize;
-    while name_len < name_bytes.len()
-        && (name_bytes[name_len].is_ascii_alphanumeric()
-            || name_bytes[name_len] == b'-'
-            || name_bytes[name_len] == b'_')
-    {
-        name_len += 1;
-    }
+    let name_end = name_bytes
+        .iter()
+        .position(|&b| b == b'_' || b == b'=' || b == b' ' || b == b'>' || b == b'\n' || b == b'\r')
+        .unwrap_or(name_bytes.len());
 
-    if name_len == 0 {
+    if name_end == 0 {
         return None;
     }
 
-    let actual_name = std::str::from_utf8(&name_bytes[..name_len]).unwrap_or("");
+    let actual_name = std::str::from_utf8(&name_bytes[..name_end]).unwrap_or("");
     if actual_name != old_name {
-        // This definition is for a compound signal like foo.bar — skip
         return None;
     }
 
     let start_pos = byte_to_position(text, name_start);
     let end_pos = Position {
         line: start_pos.line,
-        character: start_pos.character + name_len as u32,
+        character: start_pos.character + name_end as u32,
     };
 
     Some(TextEdit {

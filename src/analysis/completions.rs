@@ -81,6 +81,14 @@ pub fn generate(ctx: &CompletionContext) -> Vec<CompletionItem> {
                         }
                     }
                 }
+                // Cursor right after opening quote — value starts with @ or $
+                if relative_offset == 0 {
+                    if value.starts_with('@') {
+                        items.extend(complete_actions(&actions::all()));
+                    } else if value.starts_with('$') {
+                        items.extend(complete_signals(ctx.signal_analysis, &ctx.data_attrs));
+                    }
+                }
                 return deduplicate_and_sort(items);
             }
         }
@@ -296,7 +304,9 @@ fn complete_modifiers(
 fn find_attribute_at_offset(attrs: &[DataAttribute], offset: usize) -> Option<&DataAttribute> {
     attrs.iter().find(|a| {
         offset >= a.name_start && offset <= a.name_start + a.raw_name.len()
-            || a.value_start.is_some_and(|vs| offset >= vs)
+            || a.value_start.is_some_and(|vs| {
+                offset >= vs && offset <= vs + a.value.as_ref().map(|v| v.len()).unwrap_or(0) + 2
+            })
     })
 }
 
@@ -332,4 +342,108 @@ mod tests {
         assert!(signals.iter().any(|s| s.label == "$foo"));
         assert!(signals.iter().any(|s| s.label == "$bar"));
     }
+}
+
+#[test]
+fn test_complete_after_signals_block() {
+    let html = r#"<div data-signals:counter="0"></div>
+<div data-show="$counter > 0">
+  <button data-on:click="@get('/api/data')">Load</button>
+</div>"#;
+    let (_, attrs) = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+    let analysis = crate::analysis::signals::analyze_signals(html);
+    let line_index = crate::line_index::LineIndex::new(html.to_string());
+
+    // Find @get in the button
+    let at_byte = html.find("@get").unwrap();
+    let (l, c) = line_index.byte_to_position(at_byte);
+    eprintln!(
+        "attrs: {:?}",
+        attrs
+            .iter()
+            .map(|a| format!("{} v={:?} vs={:?}", a.raw_name, a.value, a.value_start))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("@get at byte={at_byte} pos=({l},{c})");
+
+    let ctx = CompletionContext {
+        line_index: &line_index,
+        position: Position {
+            line: l,
+            character: c,
+        },
+        data_attrs: attrs.clone(),
+        signal_analysis: &analysis,
+    };
+    let items = generate(&ctx);
+    eprintln!("items: {}", items.len());
+    for i in &items {
+        eprintln!("  {}", i.label);
+    }
+    assert!(
+        items.iter().any(|i| i.label == "@get"),
+        "should suggest @get"
+    );
+}
+
+#[test]
+fn debug_name_and_value_ranges() {
+    let html = r#"<div data-signals:counter="0"></div>
+<div data-show="$counter > 0">
+  <button data-on:click="@get('/api/data')">Load</button>
+</div>"#;
+    let (_, attrs) = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+    for a in &attrs {
+        println!(
+            "attr '{}': name_start={} name_end={} raw_len={} value_start={:?} value_len={}",
+            a.raw_name,
+            a.name_start,
+            a.name_start + a.raw_name.len(),
+            a.raw_name.len(),
+            a.value_start,
+            a.value.as_ref().map(|v| v.len()).unwrap_or(0)
+        );
+    }
+    let at_byte = html.find("@get").unwrap();
+    println!("\n@get at byte {}", at_byte);
+}
+
+#[test]
+fn debug_find_attr() {
+    let html = r#"<div data-signals:counter="0"></div>
+<div data-show="$counter > 0">
+  <button data-on:click="@get('/api/data')">Load</button>
+</div>"#;
+    let (_, attrs) = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+    let at_byte = html.find("@get").unwrap();
+    println!("cursor at {}", at_byte);
+    for a in &attrs {
+        let name_end = a.name_start + a.raw_name.len();
+        let val_end =
+            a.value_start.unwrap_or(0) + a.value.as_ref().map(|v| v.len()).unwrap_or(0) + 2;
+        let in_name = at_byte >= a.name_start && at_byte <= name_end;
+        let in_val = a
+            .value_start
+            .is_some_and(|vs| at_byte >= vs && at_byte <= val_end);
+        println!(
+            "  '{}': ({}..{}) val_start={:?} val_end={} name={} val={}",
+            a.raw_name, a.name_start, name_end, a.value_start, val_end, in_name, in_val
+        );
+    }
+}
+
+#[test]
+fn debug_find_attr_result() {
+    let html = r#"<div data-signals:counter="0"></div>
+<div data-show="$counter > 0">
+  <button data-on:click="@get('/api/data')">Load</button>
+</div>"#;
+    let (_, attrs) = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+    let at_byte = html.find("@get").unwrap();
+    let found = find_attribute_at_offset(&attrs, at_byte);
+    println!(
+        "find_attribute_at_offset({}) = {:?}",
+        at_byte,
+        found.map(|a| &a.raw_name)
+    );
 }

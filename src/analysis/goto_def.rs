@@ -14,8 +14,14 @@ pub fn goto_definition(
 
     // Check if cursor is inside a signal reference in an attribute value
     for attr in attrs {
-        let value = attr.value.as_ref()?;
-        let value_start = attr.value_start?;
+        let value = match attr.value.as_ref() {
+            Some(v) => v,
+            None => continue,
+        };
+        let value_start = match attr.value_start {
+            Some(s) => s,
+            None => continue,
+        };
         let value_end = value_start + value.len() + 2;
 
         if offset < value_start || offset > value_end {
@@ -212,5 +218,21 @@ mod tests {
             result.is_none(),
             "undefined signal should have no definition"
         );
+    }
+
+    #[test]
+    fn test_goto_bind_definition() {
+        let html = r#"<input data-bind:count /><button data-on:click="$count++">+</button>"#;
+        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+        let uri = Url::parse("file:///test.html").unwrap();
+
+        let dollar_pos = html.find("$count").unwrap();
+        let pos = Position {
+            line: 0,
+            character: dollar_pos as u32 + 1,
+        };
+
+        let result = goto_definition(html, pos, &uri, &parsed.1);
+        assert!(result.is_some(), "should find definition for $count");
     }
 }

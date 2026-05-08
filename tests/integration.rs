@@ -43,8 +43,7 @@ mod integration_tests {
     #[test]
     fn html_diagnostics_no_false_positives() {
         let html = read_fixture("test.html");
-        let diags = diagnostics::generate(&html);
-        // Should not flag built-in signals or known attributes
+        let diags = diagnostics::generate(&html, None);
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR))
@@ -72,9 +71,7 @@ mod integration_tests {
     #[test]
     fn templ_parses_data_attributes() {
         let text = read_fixture("test.templ");
-        // Templ inherits HTML grammar, try HTML parse
-        let result = parse_html(text.as_bytes());
-        if let Ok((_, attrs)) = result {
+        if let Ok((_, attrs)) = parse_html(text.as_bytes()) {
             assert!(
                 count_data_attrs(&attrs) > 3,
                 "templ: expected some attrs, got {}",
@@ -105,15 +102,11 @@ mod integration_tests {
     #[test]
     fn jsx_diagnostics_no_false_positives() {
         let text = read_fixture("test.jsx");
-        let diags = diagnostics::generate(&text);
+        let diags = diagnostics::generate(&text, None);
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR))
             .collect();
-        // Multi-line attrs (data-on:click__debounce across lines)
-        // and self-closing attrs (data-bind:condition) may produce
-        // spurious "missing value" errors due to parser limitations.
-        // Accept up to 3 such errors for now.
         assert!(errors.len() <= 3, "JSX unexpected errors: {:?}", errors);
     }
 
@@ -133,12 +126,11 @@ mod integration_tests {
     #[test]
     fn tsx_diagnostics_no_false_positives() {
         let text = read_fixture("test.tsx");
-        let diags = diagnostics::generate(&text);
+        let diags = diagnostics::generate(&text, None);
         let errors: Vec<_> = diags
             .iter()
             .filter(|d| d.severity == Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR))
             .collect();
-        // Same multi-line/self-closing attr limitations as JSX
         assert!(errors.len() <= 3, "TSX unexpected errors: {:?}", errors);
     }
 
@@ -147,7 +139,6 @@ mod integration_tests {
     #[test]
     fn heex_parses_data_attributes() {
         let text = read_fixture("test.heex");
-        // HEEx inherits HTML; try standard HTML parse
         if let Ok((_, attrs)) = parse_html(text.as_bytes()) {
             assert!(
                 count_data_attrs(&attrs) > 3,

@@ -1,10 +1,12 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
+use crate::analysis::project_index::ProjectIndex;
 use crate::data::{actions, attributes, modifiers};
 use crate::parser::html::{self, DataAttribute};
 
-/// Generate diagnostics for a document.
-pub fn generate(text: &str) -> Vec<Diagnostic> {
+/// Generate diagnostics for a document. Optionally checks cross-file
+/// index to suppress "undefined signal" hints.
+pub fn generate(text: &str, project_index: Option<&ProjectIndex>) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Parse for data-* attributes. Try both HTML and JSX parsers.
@@ -44,7 +46,7 @@ pub fn generate(text: &str) -> Vec<Diagnostic> {
 
     // Signal reference diagnostics
     let signal_analysis = crate::analysis::signals::analyze_signals(text);
-    check_undefined_signals(&signal_analysis, text, &mut diagnostics);
+    check_undefined_signals(&signal_analysis, text, &mut diagnostics, project_index);
 
     diagnostics
 }
@@ -289,6 +291,7 @@ fn check_undefined_signals(
     analysis: &crate::analysis::signals::SignalAnalysis,
     text: &str,
     diagnostics: &mut Vec<Diagnostic>,
+    project_index: Option<&ProjectIndex>,
 ) {
     for ref_ in &analysis.references {
         let top_name = ref_.name.split('.').next().unwrap_or("");
@@ -300,23 +303,34 @@ fn check_undefined_signals(
         if top_name.starts_with("__") {
             continue;
         }
-        if !analysis.top_level_names.contains(top_name) {
-            let range = crate::util::byte_range_to_lsp_range(
-                text,
-                ref_.byte_offset,
-                ref_.byte_offset + 1 + ref_.name.len(),
-            );
-            diagnostics.push(Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::HINT),
-                source: Some("datastar".to_string()),
-                message: format!(
-                    "Signal not defined locally: '${}'. It may be defined in a parent component.",
-                    ref_.name
-                ),
-                ..Default::default()
-            });
+
+        // Skip if defined locally
+        if analysis.top_level_names.contains(top_name) {
+            continue;
         }
+
+        // Skip if defined in another open file (cross-file)
+        if let Some(index) = project_index {
+            if !index.find_definitions(top_name, None).is_empty() {
+                continue;
+            }
+        }
+
+        let range = crate::util::byte_range_to_lsp_range(
+            text,
+            ref_.byte_offset,
+            ref_.byte_offset + 1 + ref_.name.len(),
+        );
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::HINT),
+            source: Some("datastar".to_string()),
+            message: format!(
+                "Undefined signal: '${}' is not defined in any open file.",
+                ref_.name
+            ),
+            ..Default::default()
+        });
     }
 }
 
@@ -326,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_unknown_attribute() {
-        let diags = generate(r#"<div data-fake-thing="x"></div>"#);
+        let diags = generate(r#"<div data-fake-thing="x"></div>"#, None);
         assert!(diags
             .iter()
             .any(|d| d.message.contains("Unknown Datastar attribute")));
@@ -334,21 +348,19 @@ mod tests {
 
     #[test]
     fn test_missing_value() {
-        let diags = generate(r#"<div data-on:click></div>"#);
+        let diags = generate(r#"<div data-on:click></div>"#, None);
         assert!(diags.iter().any(|d| d.message.contains("Missing value")));
     }
 
     #[test]
     fn test_undefined_signal() {
-        let diags = generate(r#"<div data-text="$undefined"></div>"#);
-        assert!(diags
-            .iter()
-            .any(|d| d.message.contains("Signal not defined locally")));
+        let diags = generate(r#"<div data-text="$undefined"></div>"#, None);
+        assert!(diags.iter().any(|d| d.message.contains("Undefined signal")));
     }
 
     #[test]
     fn test_valid_clean() {
-        let diags = generate(r#"<div data-signals:foo="1" data-text="$foo"></div>"#);
+        let diags = generate(r#"<div data-signals:foo="1" data-text="$foo"></div>"#, None);
         assert!(diags.is_empty());
     }
 }

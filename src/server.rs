@@ -230,7 +230,7 @@ impl LanguageServer for Backend {
 
 impl Backend {
     async fn publish_diagnostics(&self, uri: Url, text: &str) {
-        let diags = diagnostics::generate(text);
+        let diags = diagnostics::generate(text, Some(&self.project_index));
         self.client.publish_diagnostics(uri, diags, None).await;
     }
 }

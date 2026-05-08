@@ -371,7 +371,9 @@ mod tests {
     #[test]
     fn test_undefined_signal() {
         let diags = generate(r#"<div data-text="$undefined"></div>"#);
-        assert!(diags.iter().any(|d| d.message.contains("Signal not defined locally")));
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("Signal not defined locally")));
     }
 
     #[test]

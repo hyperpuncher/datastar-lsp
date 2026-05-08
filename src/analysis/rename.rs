@@ -125,9 +125,7 @@ fn make_definition_edit(
         .unwrap_or(after_data.len());
 
     // Find colon within the attribute name bounds
-    let colon_pos = after_data[..eq_or_end]
-        .iter()
-        .position(|&b| b == b':')?;
+    let colon_pos = after_data[..eq_or_end].iter().position(|&b| b == b':')?;
 
     // Name starts right after colon, ends at next __ or =/ / >
     let name_start = def_offset + 5 + colon_pos + 1;
@@ -323,7 +321,10 @@ mod tests {
 
         let changes = result.unwrap();
         let edits = changes.values().next().unwrap();
-        assert!(edits.len() >= 2, "should rename both definition and reference");
+        assert!(
+            edits.len() >= 2,
+            "should rename both definition and reference"
+        );
     }
 
     #[test]

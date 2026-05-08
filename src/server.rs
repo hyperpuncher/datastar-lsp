@@ -6,7 +6,8 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use datastar_lsp::analysis::{
-    completions, diagnostics, goto_def, hover, project_index::ProjectIndex, references, rename,
+    code_actions, completions, diagnostics, goto_def, hover, project_index::ProjectIndex,
+    references, rename,
 };
 use datastar_lsp::parser::html::{self, DataAttribute};
 
@@ -64,6 +65,7 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(false),
                     work_done_progress_options: Default::default(),
                 })),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -187,6 +189,23 @@ impl LanguageServer for Backend {
             uri,
             Some(&self.project_index),
         )))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = &params.text_document.uri;
+        let text = match self.documents.get(uri) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+
+        let mut actions = Vec::new();
+        for diag in &params.context.diagnostics {
+            if diag.source.as_deref() == Some("datastar") {
+                actions.extend(code_actions::generate(&text, uri, diag));
+            }
+        }
+
+        Ok(Some(actions))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {

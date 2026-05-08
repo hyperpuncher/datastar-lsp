@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::Url;
 
-use crate::analysis::signals::{SignalAnalysis, SignalDef};
+use crate::analysis::signals::SignalAnalysis;
 
 /// Project-wide signal index across all open documents.
 /// Used for cross-file go-to-definition, references, and rename.

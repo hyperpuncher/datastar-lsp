@@ -2,16 +2,19 @@
 
 Language server for [Datastar](https://data-star.dev) hypermedia framework.
 
-**Features:**
-- Diagnostics: unknown attributes, missing keys/values, undefined signals/actions, invalid modifiers
-- Hover: documentation for attributes, signals, actions, modifiers
-- Completions: `$` signals, `@` actions, `:` keys, `__` modifiers
-- Go-to-definition: `$signal` → `data-signals:signal` (cross-file)
-- Find references: all `$signal` usages across open files
-- Rename: rename signal across all open files
-- Code actions: define undefined signals, add missing values/keys
+## Features
 
-**Languages:** HTML, Templ (Go), JSX, TSX, HEEx (Elixir), Blade (PHP)
+- **Diagnostics** - unknown attributes, missing keys/values, undefined signals/actions, invalid modifiers
+- **Hover** - documentation for attributes, signals, actions, and modifiers
+- **Completions** - `$` signals, `@` actions, `:` keys, `__` modifiers
+- **Go-to-definition** - `$signal` → `data-signals:signal` (cross-file)
+- **Find references** - all `$signal` usages across open files
+- **Rename** - rename signal across all open files
+- **Code actions** - define undefined signals, add missing values/keys
+
+## Supported Languages
+
+HTML · Templ (Go) · JSX · TSX · HEEx (Elixir) · Blade (PHP)
 
 ## Install
 
@@ -25,8 +28,6 @@ Language server for [Datastar](https://data-star.dev) hypermedia framework.
 ```
 
 ### Manual
-
-Download binary from [releases](https://github.com/hyperpuncher/datastar-lsp/releases), configure your editor:
 
 ```lua
 -- Neovim 0.11+

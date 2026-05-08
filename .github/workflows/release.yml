@@ -43,13 +43,13 @@ jobs:
             EXT=".exe"
           fi
           cp "target/${{ matrix.target }}/release/$BIN" "dist/datastar-lsp-${{ matrix.target }}$EXT"
-          strip "dist/datastar-lsp-${{ matrix.target }}" || true
+          strip "dist/datastar-lsp-${{ matrix.target }}$EXT" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: dist/datastar-lsp-${{ matrix.target }}
+          path: dist/datastar-lsp-${{ matrix.target }}*
 
   release:
     name: Create Release

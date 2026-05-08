@@ -7,7 +7,6 @@ use tower_lsp::{Client, LanguageServer};
 
 use datastar_lsp::analysis::{
     completions, diagnostics, goto_def, hover, project_index::ProjectIndex, references, rename,
-    semantic_tokens,
 };
 use datastar_lsp::parser::html::{self, DataAttribute};
 
@@ -65,16 +64,6 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(false),
                     work_done_progress_options: Default::default(),
                 })),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            work_done_progress_options: Default::default(),
-                            legend: semantic_tokens::legend(),
-                            range: None,
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                        },
-                    ),
-                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -198,26 +187,6 @@ impl LanguageServer for Backend {
             uri,
             Some(&self.project_index),
         )))
-    }
-
-    async fn semantic_tokens_full(
-        &self,
-        params: SemanticTokensParams,
-    ) -> Result<Option<SemanticTokensResult>> {
-        let uri = &params.text_document.uri;
-
-        let text = match self.documents.get(uri) {
-            Some(t) => t.clone(),
-            None => return Ok(None),
-        };
-
-        let attrs = self.parse_document(uri, &text);
-        let tokens = semantic_tokens::generate(&text, &attrs);
-
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data: tokens,
-        })))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {

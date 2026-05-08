@@ -10,8 +10,7 @@ local M = {}
 function M.setup(opts)
 	opts = opts or {}
 
-	local filetypes = opts.filetypes
-		or { "html", "templ", "heex", "blade", "javascriptreact", "typescriptreact" }
+	local filetypes = opts.filetypes or { "html", "templ", "heex", "blade", "javascriptreact", "typescriptreact" }
 
 	local cmd = opts.cmd or M._get_binary_cmd(opts.version or "latest")
 	if not cmd then
@@ -77,15 +76,12 @@ function M._download_binary(version, install_dir, bin_path)
 
 	vim.fn.mkdir(install_dir, "p")
 
-	local ok, result = pcall(function()
+	local ok, _ = pcall(function()
 		return vim.fn.system({ "curl", "-fsSL", "-o", bin_path, url })
 	end)
 
 	if not ok or vim.v.shell_error ~= 0 then
-		vim.notify(
-			"datastar-lsp: failed to download binary from " .. url,
-			vim.log.levels.ERROR
-		)
+		vim.notify("datastar-lsp: failed to download binary from " .. url, vim.log.levels.ERROR)
 		-- Clean up partial download
 		vim.fn.delete(bin_path)
 		return false

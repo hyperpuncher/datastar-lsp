@@ -30,11 +30,16 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
+        shell: bash
         run: |
           cargo build --release --target ${{ matrix.target }}
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/datastar-lsp dist/datastar-lsp-${{ matrix.target }}
-          strip dist/datastar-lsp-${{ matrix.target }} || true
+          BIN="datastar-lsp"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            BIN="datastar-lsp.exe"
+          fi
+          cp "target/${{ matrix.target }}/release/$BIN" "dist/datastar-lsp-${{ matrix.target }}"
+          strip "dist/datastar-lsp-${{ matrix.target }}" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

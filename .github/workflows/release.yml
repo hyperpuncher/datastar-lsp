@@ -18,6 +18,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v6
@@ -57,8 +59,9 @@ jobs:
           mv dist/x86_64-unknown-linux-gnu/datastar-lsp-x86_64-unknown-linux-gnu dist/datastar-lsp-linux-x64
           mv dist/x86_64-apple-darwin/datastar-lsp-x86_64-apple-darwin dist/datastar-lsp-darwin-x64
           mv dist/aarch64-apple-darwin/datastar-lsp-aarch64-apple-darwin dist/datastar-lsp-darwin-arm64
+          mv dist/x86_64-pc-windows-msvc/datastar-lsp-x86_64-pc-windows-msvc.exe dist/datastar-lsp-windows-x64.exe
           rm -rf dist/x86_64-unknown-linux-gnu
-          rm -rf dist/x86_64-apple-darwin dist/aarch64-apple-darwin
+          rm -rf dist/x86_64-apple-darwin dist/aarch64-apple-darwin dist/x86_64-pc-windows-msvc
 
       - name: Release
         uses: softprops/action-gh-release@v3

@@ -5,12 +5,16 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-use datastar_lsp::analysis::{completions, diagnostics, goto_def, hover};
+use datastar_lsp::analysis::{
+    completions, diagnostics, goto_def, hover, project_index::ProjectIndex, references, rename,
+    semantic_tokens,
+};
 use datastar_lsp::parser::html::{self, DataAttribute};
 
 pub struct Backend {
     client: Client,
     documents: Arc<DashMap<Url, String>>,
+    project_index: Arc<ProjectIndex>,
 }
 
 impl Backend {
@@ -18,6 +22,7 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
+            project_index: Arc::new(ProjectIndex::new()),
         }
     }
 
@@ -55,6 +60,21 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                })),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: Default::default(),
+                            legend: semantic_tokens::legend(),
+                            range: None,
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -78,6 +98,11 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text.clone();
         tracing::info!("Opened: {uri}");
+
+        // Index signals for cross-file tracking
+        let analysis = datastar_lsp::analysis::signals::analyze_signals(&text);
+        self.project_index.index(&uri, text.clone(), analysis);
+
         self.documents.insert(uri.clone(), text.clone());
         self.publish_diagnostics(uri, &text).await;
     }
@@ -85,6 +110,11 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let text = params.content_changes[0].text.clone();
+
+        // Re-index signals
+        let analysis = datastar_lsp::analysis::signals::analyze_signals(&text);
+        self.project_index.index(&uri, text.clone(), analysis);
+
         self.documents.insert(uri.clone(), text.clone());
         self.publish_diagnostics(uri, &text).await;
     }
@@ -93,6 +123,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         tracing::info!("Closed: {uri}");
         self.documents.remove(&uri);
+        self.project_index.remove(&uri);
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -143,7 +174,73 @@ impl LanguageServer for Backend {
 
         let attrs = self.parse_document(uri, &text);
 
-        Ok(goto_def::goto_definition(&text, position, uri, &attrs))
+        Ok(goto_def::goto_definition(
+            &text,
+            position,
+            uri,
+            &attrs,
+            Some(&self.project_index),
+        ))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let text = match self.documents.get(uri) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+
+        Ok(Some(references::find_references(
+            &text,
+            position,
+            uri,
+            Some(&self.project_index),
+        )))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+
+        let text = match self.documents.get(uri) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+
+        let attrs = self.parse_document(uri, &text);
+        let tokens = semantic_tokens::generate(&text, &attrs);
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = &params.new_name;
+
+        let text = match self.documents.get(uri) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+
+        let mut edit = rename::rename_signal(&text, position, new_name, Some(&self.project_index))
+            .unwrap_or_default();
+        if let Some(ref mut changes) = edit.changes {
+            let entries: Vec<_> = changes
+                .iter()
+                .flat_map(|(_, edits)| edits.clone())
+                .collect();
+            changes.clear();
+            changes.insert(uri.clone(), entries);
+        }
+        Ok(Some(edit))
     }
 }
 

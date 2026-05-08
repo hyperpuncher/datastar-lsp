@@ -1,14 +1,17 @@
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
 
+use crate::analysis::project_index::ProjectIndex;
 use crate::analysis::signals::analyze_signals;
 use crate::parser::html::DataAttribute;
 
 /// Find the definition location of a signal or action at the given position.
+/// Searches local document first, then cross-file index.
 pub fn goto_definition(
     text: &str,
     position: Position,
     uri: &Url,
     attrs: &[DataAttribute],
+    project_index: Option<&ProjectIndex>,
 ) -> Option<GotoDefinitionResponse> {
     let offset = super::completions::position_to_byte_offset(text, position);
 
@@ -58,13 +61,13 @@ pub fn goto_definition(
                 .trim_end_matches('-')
                 .trim_end_matches('.');
             let top_name = signal_ref.split('.').next().unwrap_or("");
-            return find_signal_definition(text, top_name, uri);
+            return find_signal_definition(text, top_name, uri, project_index);
         }
 
         // Check if cursor is inside a signal name (after $, not at $ itself)
         if let Some(signal_name) = find_signal_name_at(value, rel_offset) {
             let top_name = signal_name.split('.').next().unwrap_or("");
-            return find_signal_definition(text, top_name, uri);
+            return find_signal_definition(text, top_name, uri, project_index);
         }
     }
 
@@ -127,24 +130,54 @@ fn find_signal_name_at(value: &str, offset: usize) -> Option<String> {
 }
 
 /// Find the definition of a top-level signal name in the document.
-fn find_signal_definition(text: &str, top_name: &str, uri: &Url) -> Option<GotoDefinitionResponse> {
+/// Falls back to cross-file project index if not found locally.
+fn find_signal_definition(
+    text: &str,
+    top_name: &str,
+    uri: &Url,
+    project_index: Option<&ProjectIndex>,
+) -> Option<GotoDefinitionResponse> {
     let analysis = analyze_signals(text);
-    let defs = analysis.definitions.get(top_name)?;
-    let def = defs.first()?;
 
-    let pos = byte_to_position(text, def.byte_offset);
-    let range = Range {
-        start: pos,
-        end: Position {
-            line: pos.line,
-            character: pos.character + def.name.len() as u32 + 1,
-        },
-    };
+    // Try local first
+    if let Some(defs) = analysis.definitions.get(top_name) {
+        let def = defs.first()?;
+        let pos = byte_to_position(text, def.byte_offset);
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri: uri.clone(),
+            range: Range {
+                start: pos,
+                end: Position {
+                    line: pos.line,
+                    character: pos.character + def.name.len() as u32 + 1,
+                },
+            },
+        }));
+    }
 
-    Some(GotoDefinitionResponse::Scalar(Location {
-        uri: uri.clone(),
-        range,
-    }))
+    // Fall back to cross-file index
+    if let Some(index) = project_index {
+        let cross_defs = index.find_definitions(top_name, Some(uri));
+        if !cross_defs.is_empty() {
+            let (cross_uri, byte_offset) = &cross_defs[0];
+            if let Some(entry) = index.documents.get(cross_uri) {
+                let (doc_text, _) = &*entry;
+                let pos = byte_to_position(doc_text, *byte_offset);
+                return Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: cross_uri.clone(),
+                    range: Range {
+                        start: pos,
+                        end: Position {
+                            line: pos.line,
+                            character: pos.character + top_name.len() as u32 + 1,
+                        },
+                    },
+                }));
+            }
+        }
+    }
+
+    None
 }
 
 fn byte_to_position(text: &str, byte_offset: usize) -> Position {
@@ -187,7 +220,7 @@ mod tests {
             character: dollar_pos as u32 + 1, // inside "foo"
         };
 
-        let result = goto_definition(html, pos, &uri, &parsed.1);
+        let result = goto_definition(html, pos, &uri, &parsed.1, None);
         assert!(result.is_some(), "should find definition for $foo");
 
         if let GotoDefinitionResponse::Scalar(loc) = result.unwrap() {
@@ -213,7 +246,7 @@ mod tests {
             character: dollar_pos as u32 + 1,
         };
 
-        let result = goto_definition(html, pos, &uri, &parsed.1);
+        let result = goto_definition(html, pos, &uri, &parsed.1, None);
         assert!(
             result.is_none(),
             "undefined signal should have no definition"
@@ -232,7 +265,7 @@ mod tests {
             character: dollar_pos as u32 + 1,
         };
 
-        let result = goto_definition(html, pos, &uri, &parsed.1);
+        let result = goto_definition(html, pos, &uri, &parsed.1, None);
         assert!(result.is_some(), "should find definition for $count");
     }
 }

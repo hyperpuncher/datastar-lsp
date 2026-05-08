@@ -1,16 +1,19 @@
-use tower_lsp::lsp_types::{Position, TextEdit, WorkspaceEdit};
+use std::collections::HashMap;
+
+use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
 use crate::analysis::project_index::ProjectIndex;
 use crate::analysis::signals::analyze_signals;
 
 /// Produce workspace edits to rename a signal across all open documents.
-/// Returns None if the cursor is not on a defined signal reference or definition.
+/// Returns edits grouped by URI. Empty if cursor not on a defined signal.
 pub fn rename_signal(
     text: &str,
     position: Position,
+    uri: &Url,
     new_name: &str,
     project_index: Option<&ProjectIndex>,
-) -> Option<WorkspaceEdit> {
+) -> Option<HashMap<Url, Vec<TextEdit>>> {
     let offset = super::completions::position_to_byte_offset(text, position);
     let analysis = analyze_signals(text);
     let bytes = text.as_bytes();
@@ -31,18 +34,21 @@ pub fn rename_signal(
         return None;
     }
 
-    if !analysis.top_level_names.contains(&old_name) {
+    // Check cross-file too
+    let signal_exists = analysis.top_level_names.contains(&old_name)
+        || project_index
+            .map(|idx| !idx.find_definitions(&old_name, None).is_empty())
+            .unwrap_or(false);
+    if !signal_exists {
         return None;
     }
 
-    let mut edits = Vec::new();
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    let edits = changes.entry(uri.clone()).or_default();
 
     // Rename in definitions
     if let Some(defs) = analysis.definitions.get(&old_name) {
         for def in defs {
-            // Replace old top-level name with new_name
-            // For signals:counter → signals:newname
-            // Need to scan for colon+name pattern near definition
             if let Some(edit) = make_definition_edit(text, &def, &old_name, new_name) {
                 edits.push(edit);
             }
@@ -65,41 +71,39 @@ pub fn rename_signal(
         }
     }
 
-    // Cross-file rename: find references in other open documents
+    // Cross-file rename: apply to references only
     if let Some(index) = project_index {
-        for (cross_uri, byte_offset, len) in index.find_all_references(&old_name) {
-            if let Some(entry) = index.documents.get(&cross_uri) {
-                let (doc_text, _) = &*entry;
-                let pos = byte_to_position(doc_text, byte_offset);
-                edits.push(TextEdit {
-                    range: tower_lsp::lsp_types::Range {
-                        start: pos,
-                        end: Position {
-                            line: pos.line,
-                            character: pos.character + len as u32,
+        for entry in index.documents.iter() {
+            let cross_uri = entry.key();
+            if cross_uri == uri {
+                continue;
+            }
+            let (doc_text, analysis) = &*entry.value();
+            let cross_edits = changes.entry(cross_uri.clone()).or_default();
+            for ref_ in &analysis.references {
+                let ref_top = ref_.name.split('.').next().unwrap_or("");
+                if ref_top == old_name {
+                    let pos = byte_to_position(doc_text, ref_.byte_offset);
+                    cross_edits.push(TextEdit {
+                        range: tower_lsp::lsp_types::Range {
+                            start: pos,
+                            end: Position {
+                                line: pos.line,
+                                character: pos.character + ref_.name.len() as u32 + 1,
+                            },
                         },
-                    },
-                    new_text: format!("${}", new_name),
-                });
+                        new_text: format!("${}", new_name),
+                    });
+                }
             }
         }
     }
 
-    if edits.is_empty() {
+    if changes.is_empty() || changes.values().all(|v| v.is_empty()) {
         return None;
     }
 
-    Some(WorkspaceEdit {
-        changes: Some(
-            [(
-                tower_lsp::lsp_types::Url::parse("file:///dummy").expect("valid url"),
-                edits,
-            )]
-            .into_iter()
-            .collect(),
-        ),
-        ..Default::default()
-    })
+    Some(changes)
 }
 
 /// Create a TextEdit for renaming the signal name in a definition.
@@ -313,16 +317,13 @@ mod tests {
             character: dollar_pos as u32 + 2,
         };
 
-        let result = rename_signal(html, pos, "count", None);
-        assert!(result.is_some(), "should produce workspace edit");
+        let uri = Url::parse("file:///test.html").expect("valid url");
+        let result = rename_signal(html, pos, &uri, "count", None);
+        assert!(result.is_some(), "should produce edits");
 
-        let edit = result.unwrap();
-        let changes = edit.changes.unwrap();
+        let changes = result.unwrap();
         let edits = changes.values().next().unwrap();
-        assert!(
-            edits.len() >= 2,
-            "should rename both definition and reference"
-        );
+        assert!(edits.len() >= 2, "should rename both definition and reference");
     }
 
     #[test]
@@ -334,7 +335,8 @@ mod tests {
             character: def_pos as u32,
         };
 
-        let result = rename_signal(html, pos, "count", None);
+        let uri = Url::parse("file:///test.html").expect("valid url");
+        let result = rename_signal(html, pos, &uri, "count", None);
         assert!(result.is_some(), "should rename from definition position");
     }
 
@@ -347,7 +349,8 @@ mod tests {
             character: dollar_pos as u32 + 1,
         };
 
-        let result = rename_signal(html, pos, "bar", None);
+        let uri = Url::parse("file:///test.html").expect("valid url");
+        let result = rename_signal(html, pos, &uri, "bar", None);
         assert!(result.is_none(), "undefined signal should not rename");
     }
 
@@ -360,7 +363,8 @@ mod tests {
             character: dollar_pos as u32 + 1,
         };
 
-        let result = rename_signal(html, pos, "my name", None);
+        let uri = Url::parse("file:///test.html").expect("valid url");
+        let result = rename_signal(html, pos, &uri, "my name", None);
         assert!(result.is_none(), "invalid name should fail");
     }
 }

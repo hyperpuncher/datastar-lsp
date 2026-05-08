@@ -199,17 +199,13 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let mut edit = rename::rename_signal(&text, position, new_name, Some(&self.project_index))
-            .unwrap_or_default();
-        if let Some(ref mut changes) = edit.changes {
-            let entries: Vec<_> = changes
-                .iter()
-                .flat_map(|(_, edits)| edits.clone())
-                .collect();
-            changes.clear();
-            changes.insert(uri.clone(), entries);
+        match rename::rename_signal(&text, position, uri, new_name, Some(&self.project_index)) {
+            Some(changes) => Ok(Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            })),
+            None => Ok(None),
         }
-        Ok(Some(edit))
     }
 }
 

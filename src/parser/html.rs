@@ -172,25 +172,11 @@ fn try_extract_jsx_attr(node: Node, source: &[u8]) -> Option<DataAttribute> {
                 }
                 value_start = Some(child.start_byte());
             }
-            // Template expression value: {`...`} or {"..."}
+            // Template expression value: {`...`} or {"..."} or {variable}
             "jsx_expression" => {
-                // Look inside for template_string or string
-                for j in 0..child.child_count() {
-                    let inner = child.child(j as u32)?;
-                    match inner.kind() {
-                        "template_string" | "string" => {
-                            // Get the string_fragment inside
-                            for k in 0..inner.child_count() {
-                                let frag = inner.child(k as u32)?;
-                                if frag.kind() == "string_fragment" {
-                                    value_text = frag.utf8_text(source).ok().map(String::from);
-                                    value_start = Some(inner.start_byte());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                // Get all text content from the expression as the value
+                value_text = Some(child.utf8_text(source).ok()?.to_string());
+                value_start = Some(child.start_byte());
             }
             _ => {}
         }

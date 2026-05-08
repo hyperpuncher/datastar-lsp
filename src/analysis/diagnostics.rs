@@ -7,14 +7,20 @@ use crate::parser::html::{self, DataAttribute};
 pub fn generate(text: &str) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // Parse for data-* attributes. Try HTML first, then JSX — use whichever finds more.
-    let html_attrs = html::parse_html(text.as_bytes())
+    // Parse for data-* attributes. Try both HTML and JSX parsers.
+    // JSX parser handles jsx_expression values properly; HTML sends them as stripped.
+    // Use the parse that finds more attributes with values.
+    let html_attrs: Vec<_> = html::parse_html(text.as_bytes())
         .map(|(_, a)| a)
         .unwrap_or_default();
-    let jsx_attrs = html::parse_jsx(text.as_bytes())
+    let jsx_attrs: Vec<_> = html::parse_jsx(text.as_bytes())
         .map(|(_, a)| a)
         .unwrap_or_default();
-    let data_attrs = if jsx_attrs.len() > html_attrs.len() {
+
+    // Pick the parser that found more attributes with actual values
+    let html_with_vals = html_attrs.iter().filter(|a| a.value.is_some()).count();
+    let jsx_with_vals = jsx_attrs.iter().filter(|a| a.value.is_some()).count();
+    let data_attrs = if jsx_with_vals > html_with_vals || jsx_attrs.len() > html_attrs.len() {
         jsx_attrs
     } else {
         html_attrs

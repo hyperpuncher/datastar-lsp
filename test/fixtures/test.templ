@@ -1,0 +1,38 @@
+package main
+
+templ TestPage() {
+	<div data-signals:counter="0">
+		<!-- Signal definitions -->
+		<input data-bind:search />
+		<div data-computed:double="$counter * 2"></div>
+
+		<!-- Basic attributes -->
+		<div data-show="$counter > 0">Visible</div>
+		<div data-text="$counter"></div>
+		<div data-class:active="$counter % 2 === 0"></div>
+
+		<!-- Event handlers with modifiers -->
+		<button data-on:click="$counter++">Increment</button>
+		<button data-on:click__debounce.500ms.leading="$counter--">Decrement</button>
+
+		<!-- Backend actions -->
+		<button data-on:click="@get('/api/templ')">Fetch</button>
+		<button data-on:click="@post('/api/save')">Save</button>
+
+		<!-- Templ expressions mixed with datastar -->
+		for _, item := range items {
+			<div data-text="$item.name">{ item.label }</div>
+		}
+
+		<!-- Form bindings -->
+		<input data-bind:name value={ initialName } />
+		<select data-bind:category>
+			for _, cat := range categories {
+				<option value={ cat.id }>{ cat.label }</option>
+			}
+		</select>
+
+		<!-- Edge: templ attribute mixed with datastar -->
+		<div class={ "flex gap-2", templ.KV("data-show", "$visible") }></div>
+	</div>
+}

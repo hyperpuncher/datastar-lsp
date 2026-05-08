@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Datastar HTML Test</title></head>
+<body>
+	<!-- Signal definitions -->
+	<div data-signals:counter="0"></div>
+	<div data-signals="{user: {name: 'Alice', age: 30}}"></div>
+	<input data-bind:search />
+	<div data-computed:double="$counter * 2"></div>
+	<div data-ref:myDiv></div>
+	<div data-indicator:loading></div>
+
+	<!-- Basic attributes -->
+	<div data-show="$counter > 0">Visible when counter > 0</div>
+	<div data-text="$user.name"></div>
+	<div data-attr:disabled="$counter > 10"></div>
+	<div data-class:highlight="$counter % 2 === 0"></div>
+	<div data-style:color="$counter > 5 ? 'red' : 'blue'"></div>
+
+	<!-- Event handlers -->
+	<button data-on:click="$counter++">Increment</button>
+	<button data-on:click__debounce.500ms="$counter--">Decrement (debounced)</button>
+	<button data-on:keydown__window__throttle.1s.leading="$counter = 0">Reset (throttled)</button>
+
+	<!-- Form binding -->
+	<input data-bind:name value="Bob" />
+	<input type="checkbox" data-bind:agreed />
+	<select data-bind:color>
+		<option value="red">Red</option>
+		<option value="blue">Blue</option>
+	</select>
+
+	<!-- Backend actions -->
+	<button data-on:click="@get('/api/data')">Fetch data</button>
+	<button data-on:click="@post('/api/save', {headers: {'X-Token': 'abc'}})">Save</button>
+	<button data-on:click="@put('/api/update')">Update</button>
+	<button data-on:click="@patch('/api/patch')">Patch</button>
+	<button data-on:click="@delete('/api/remove')">Delete</button>
+
+	<!-- Action helpers -->
+	<div data-effect="$counter = @peek(() => $counter + 0)"></div>
+	<button data-on:click="@setAll(0, {include: /^counter$/})">Reset counter</button>
+	<button data-on:click="@toggleAll({include: /^show/})">Toggle show flags</button>
+
+	<!-- Special attributes -->
+	<div data-init="$initialized = true"></div>
+	<pre data-json-signals></pre>
+	<div data-ignore-morph>Don't morph me</div>
+	<div data-preserve-attr="open">Preserve open attr</div>
+	<div data-on-intersect__once="$visible = true"></div>
+	<div data-on-interval__duration.2s="$timer++"></div>
+	<div data-on-signal-patch__debounce.200ms="$patched = true"></div>
+
+	<!-- Modifier combinations -->
+	<button data-on:click__once__prevent__stop="$once = true">Once</button>
+	<button data-on:submit="console.log('submit')">Submit</button>
+	<div data-signals:my-signal__case.kebab="'hello'"></div>
+	<div data-signals:default__ifmissing="'fallback'"></div>
+
+	<!-- Edge cases -->
+	<div data-text="$counter--">post-dec</div>
+	<div data-text="$counter++">post-inc</div>
+	<input data-bind:nested.signal value="deep" />
+</body>
+</html>

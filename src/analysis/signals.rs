@@ -91,6 +91,56 @@ pub fn analyze_signals(text: &str) -> SignalAnalysis {
                             }
                         }
                     }
+                } else if plugin == "signals" || plugin == "computed" {
+                    // Object syntax: data-signals="{user: {name: 'Alice'}}"
+                    // or data-computed="{double: () => $counter * 2}"
+                    // Extract signal names from the object keys in the value
+                    let value_start = bytes[start + 5 + eq_or_end..]
+                        .iter()
+                        .position(|&b| b == b'"' || b == b'\'' || b == b'{');
+                    if let Some(vs) = value_start {
+                        let value = &bytes[start + 5 + eq_or_end + vs..];
+                        // Simple key extractor: find word-like identifiers before `:`
+                        extract_object_keys(value, &mut analysis, plugin, start);
+                    }
+                } else {
+                    // data-bind or data-ref with value-based signal name:
+                    // data-bind="foo" defines signal "foo"
+                    let value_start = bytes[start + 5 + eq_or_end..]
+                        .iter()
+                        .position(|&b| b == b'"' || b == b'\'');
+                    if let Some(vs) = value_start {
+                        let value_begin = start + 5 + eq_or_end + vs + 1;
+                        let value_end = bytes[value_begin..]
+                            .iter()
+                            .position(|&b| b == b'"' || b == b'\'')
+                            .map(|p| value_begin + p)
+                            .unwrap_or(bytes.len());
+                        if value_begin < value_end {
+                            let signal_name = std::str::from_utf8(&bytes[value_begin..value_end])
+                                .unwrap_or("")
+                                .to_string();
+                            if !signal_name.is_empty()
+                                && signal_name.chars().all(|c| {
+                                    c.is_alphanumeric() || c == '-' || c == '_' || c == '.'
+                                })
+                            {
+                                analysis
+                                    .definitions
+                                    .entry(signal_name.clone())
+                                    .or_default()
+                                    .push(SignalDef {
+                                        name: signal_name.clone(),
+                                        defined_by: plugin.to_string(),
+                                        byte_offset: start,
+                                    });
+                                let top = signal_name.split('.').next().unwrap_or("").to_string();
+                                if !top.is_empty() {
+                                    analysis.top_level_names.insert(top);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -137,6 +187,60 @@ pub fn analyze_signals(text: &str) -> SignalAnalysis {
     }
 
     analysis
+}
+
+/// Extract signal names from JS-style object literal keys like `{user: {name: 'Alice'}}`.
+fn extract_object_keys(value: &[u8], analysis: &mut SignalAnalysis, plugin: &str, offset: usize) {
+    let mut i = 0;
+    while i < value.len() {
+        // Skip whitespace and punctuation
+        while i < value.len() && !value[i].is_ascii_alphabetic() && value[i] != b'_' {
+            i += 1;
+        }
+        if i >= value.len() {
+            break;
+        }
+        // Read potential key
+        let key_start = i;
+        while i < value.len()
+            && (value[i].is_ascii_alphanumeric()
+                || value[i] == b'_'
+                || value[i] == b'-'
+                || value[i] == b'$')
+        {
+            i += 1;
+        }
+        if i > key_start && i < value.len() && value[i] == b':' {
+            let key = std::str::from_utf8(&value[key_start..i]).unwrap_or("");
+            if !key.is_empty() && !key.starts_with('$') {
+                analysis
+                    .definitions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push(SignalDef {
+                        name: key.to_string(),
+                        defined_by: plugin.to_string(),
+                        byte_offset: offset,
+                    });
+                analysis.top_level_names.insert(key.to_string());
+            }
+        }
+        // Skip nested objects/arrays
+        let mut depth = 0u32;
+        while i < value.len() {
+            match value[i] {
+                b'{' => depth += 1,
+                b'}' if depth > 0 => depth -= 1,
+                b'}' => break,
+                b',' if depth == 0 => {
+                    i += 1;
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
 }
 
 #[cfg(test)]

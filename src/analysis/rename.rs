@@ -202,74 +202,46 @@ fn find_definition_name_at(bytes: &[u8], offset: usize) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn ren_for(html: &str, cursor: &str, new_name: &str) -> Option<HashMap<Url, Vec<TextEdit>>> {
+        let uri = Url::parse("file:///test.html").expect("valid url");
+        let offset = html.find(cursor).unwrap();
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let (line, col) = line_index.byte_to_position(offset);
+        let pos = Position {
+            line,
+            character: col + 1,
+        };
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        rename_signal(&line_index, pos, &uri, new_name, &analysis, None)
+    }
+
     #[test]
     fn test_rename_signal_on_reference() {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span></div>"#;
-        let dollar_pos = html.find("$counter").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 2,
-        };
-
-        let uri = Url::parse("file:///test.html").expect("valid url");
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = rename_signal(&line_index, pos, &uri, "count", &analysis, None);
+        let result = ren_for(html, "$counter", "count");
         assert!(result.is_some(), "should produce edits");
-
         let changes = result.unwrap();
-        let edits = changes.values().next().unwrap();
-        assert!(
-            edits.len() >= 2,
-            "should rename both definition and reference"
-        );
+        let total: usize = changes.values().map(|v| v.len()).sum();
+        assert!(total >= 2, "should rename both definition and reference");
     }
 
     #[test]
     fn test_rename_signal_on_definition() {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span></div>"#;
-        let def_pos = html.find(":counter").unwrap() + 1;
-        let pos = Position {
-            line: 0,
-            character: def_pos as u32,
-        };
-
-        let uri = Url::parse("file:///test.html").expect("valid url");
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = rename_signal(&line_index, pos, &uri, "count", &analysis, None);
+        let result = ren_for(html, ":counter", "count");
         assert!(result.is_some(), "should rename from definition position");
     }
 
     #[test]
     fn test_rename_undefined_signal() {
-        let html = r#"<div data-text="$foo"></div>"#;
-        let dollar_pos = html.find("$foo").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let uri = Url::parse("file:///test.html").expect("valid url");
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = rename_signal(&line_index, pos, &uri, "bar", &analysis, None);
+        let result = ren_for(r#"<div data-text="$foo"></div>"#, "$foo", "bar");
         assert!(result.is_none(), "undefined signal should not rename");
     }
 
     #[test]
     fn test_rename_invalid_name() {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span></div>"#;
-        let dollar_pos = html.find("$counter").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let uri = Url::parse("file:///test.html").expect("valid url");
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = rename_signal(&line_index, pos, &uri, "my name", &analysis, None);
+        let result = ren_for(html, "$counter", "my name");
         assert!(result.is_none(), "invalid name should fail");
     }
 }

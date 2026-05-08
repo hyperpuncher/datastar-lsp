@@ -220,25 +220,26 @@ fn hover_action(value: &str, offset: usize) -> Option<Hover> {
 mod tests {
     use super::*;
 
+    fn hover_for(html: &str, cursor: &str) -> Option<Hover> {
+        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+        let offset = html.find(cursor).unwrap();
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let (line, col) = line_index.byte_to_position(offset);
+        let pos = Position {
+            line,
+            character: col,
+        };
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        generate(&line_index, pos, &parsed.1, &analysis)
+    }
+
     #[test]
     fn test_hover_on_signal() {
         let html = r#"<div data-signals:foo="1"><span data-text="$foo"></span></div>"#;
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        // Find byte offset of $foo
-        let dollar_offset = html.find("$foo").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_offset as u32,
-        };
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1, &analysis);
-        assert!(
-            hover.is_some(),
-            "expected hover at offset {}",
-            dollar_offset
-        );
-        let hover = hover.unwrap();
-        let contents = match &hover.contents {
+        let hover = hover_for(html, "$foo");
+        assert!(hover.is_some());
+        let h = hover.unwrap();
+        let contents = match &h.contents {
             HoverContents::Markup(m) => &m.value,
             _ => panic!("expected markup"),
         };
@@ -252,16 +253,18 @@ mod tests {
     #[test]
     fn test_hover_on_attribute() {
         let html = r#"<div data-show="true"></div>"#;
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+        // Character 7 is inside "data-sh"
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
         let pos = Position {
             line: 0,
             character: 7,
         };
+        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
         let analysis = crate::analysis::signals::analyze_signals(html);
-        let hover = generate(&LineIndex::new(html.to_string()), pos, &parsed.1, &analysis);
+        let hover = generate(&line_index, pos, &parsed.1, &analysis);
         assert!(hover.is_some(), "expected hover at char 7");
-        let hover = hover.unwrap();
-        let contents = match &hover.contents {
+        let h = hover.unwrap();
+        let contents = match &h.contents {
             HoverContents::Markup(m) => &m.value,
             _ => panic!("expected markup"),
         };

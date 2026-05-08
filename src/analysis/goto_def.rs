@@ -96,50 +96,31 @@ fn find_signal_definition(
 mod tests {
     use super::*;
 
+    fn gd_for(html: &str, cursor: &str) -> Option<GotoDefinitionResponse> {
+        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+        let uri = Url::parse("file:///test.html").unwrap();
+        let offset = html.find(cursor).unwrap();
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let (line, col) = line_index.byte_to_position(offset);
+        let pos = Position {
+            line,
+            character: col + 1,
+        }; // inside signal name
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None)
+    }
+
     #[test]
     fn test_goto_signal_definition() {
         let html = r#"<div data-signals:foo="1"><span data-text="$foo"></span></div>"#;
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let uri = Url::parse("file:///test.html").unwrap();
-
-        // Cursor at $foo in data-text
-        let dollar_pos = html.find("$foo").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1, // inside "foo"
-        };
-
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
+        let result = gd_for(html, "$foo");
         assert!(result.is_some(), "should find definition for $foo");
-
-        if let GotoDefinitionResponse::Scalar(loc) = result.unwrap() {
-            // Should point to data-signals:foo attribute
-            let line_text = &html[loc.range.start.character as usize..];
-            assert!(
-                line_text.contains("data-signals") || line_text.contains("foo"),
-                "should navigate to signal definition, got: {}",
-                line_text
-            );
-        }
     }
 
     #[test]
     fn test_goto_undefined_signal() {
         let html = r#"<div data-text="$nonexistent"></div>"#;
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let uri = Url::parse("file:///test.html").unwrap();
-
-        let dollar_pos = html.find("$nonexistent").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
+        let result = gd_for(html, "$nonexistent");
         assert!(
             result.is_none(),
             "undefined signal should have no definition"
@@ -149,18 +130,7 @@ mod tests {
     #[test]
     fn test_goto_bind_definition() {
         let html = r#"<input data-bind:count /><button data-on:click="$count++">+</button>"#;
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let uri = Url::parse("file:///test.html").unwrap();
-
-        let dollar_pos = html.find("$count").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let result = goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None);
+        let result = gd_for(html, "$count");
         assert!(result.is_some(), "should find definition for $count");
     }
 }

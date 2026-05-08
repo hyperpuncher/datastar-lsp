@@ -2,51 +2,42 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use crate::analysis::project_index::ProjectIndex;
 use crate::data::{actions, attributes, modifiers};
-use crate::parser::html::{self, DataAttribute};
+use crate::line_index::LineIndex;
+use crate::parser::html::DataAttribute;
 
 /// Generate diagnostics for a document. Optionally checks cross-file
 /// index to suppress "undefined signal" hints.
-pub fn generate(text: &str, project_index: Option<&ProjectIndex>) -> Vec<Diagnostic> {
+pub fn generate(
+    line_index: &LineIndex,
+    data_attrs: &[DataAttribute],
+    project_index: Option<&ProjectIndex>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-
-    // Parse for data-* attributes. Try both HTML and JSX parsers.
-    // JSX parser handles jsx_expression values properly; HTML sends them as stripped.
-    // Use the parse that finds more attributes with values.
-    let html_attrs: Vec<_> = html::parse_html(text.as_bytes())
-        .map(|(_, a)| a)
-        .unwrap_or_default();
-    let jsx_attrs: Vec<_> = html::parse_jsx(text.as_bytes())
-        .map(|(_, a)| a)
-        .unwrap_or_default();
-
-    // Pick the parser that found more attributes with actual values
-    let html_with_vals = html_attrs.iter().filter(|a| a.value.is_some()).count();
-    let jsx_with_vals = jsx_attrs.iter().filter(|a| a.value.is_some()).count();
-    let data_attrs = if jsx_with_vals > html_with_vals || jsx_attrs.len() > html_attrs.len() {
-        jsx_attrs
-    } else {
-        html_attrs
-    };
 
     let attr_registry = attributes::all();
     let action_registry = actions::all();
     let modifier_registry = modifiers::all();
 
     // Per-attribute diagnostics
-    for attr in &data_attrs {
+    for attr in data_attrs {
         check_attribute_validity(
             attr,
             &attr_registry,
             &modifier_registry,
-            text,
+            line_index,
             &mut diagnostics,
         );
-        check_expression_actions(attr, &action_registry, text, &mut diagnostics);
+        check_expression_actions(attr, &action_registry, line_index, &mut diagnostics);
     }
 
-    // Signal reference diagnostics
-    let signal_analysis = crate::analysis::signals::analyze_signals(text);
-    check_undefined_signals(&signal_analysis, text, &mut diagnostics, project_index);
+    // Signal reference diagnostics — scan the full text for signal references
+    let signal_analysis = crate::analysis::signals::analyze_signals(line_index.text());
+    check_undefined_signals(
+        &signal_analysis,
+        line_index,
+        &mut diagnostics,
+        project_index,
+    );
 
     diagnostics
 }
@@ -55,7 +46,7 @@ fn check_attribute_validity(
     attr: &DataAttribute,
     registry: &std::collections::BTreeMap<&str, attributes::AttributeDef>,
     modifier_registry: &std::collections::BTreeMap<&str, modifiers::ModifierDef>,
-    text: &str,
+    line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let def = match registry.get(attr.plugin_name.as_str()) {
@@ -63,7 +54,7 @@ fn check_attribute_validity(
         None => {
             // Unknown plugin name
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
             );
@@ -85,7 +76,7 @@ fn check_attribute_validity(
     match (def.key_req, &attr.key) {
         (attributes::Requirement::Must, None) => {
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
             );
@@ -103,7 +94,7 @@ fn check_attribute_validity(
         (attributes::Requirement::Denied, Some(key)) => {
             let key_pos = attr.raw_name.find(':').unwrap_or(0);
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.name_start + key_pos,
                 attr.name_start + key_pos + 1 + key.len(),
             );
@@ -120,7 +111,7 @@ fn check_attribute_validity(
         }
         (attributes::Requirement::Exclusive, Some(_)) if attr.value.is_some() => {
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
             );
@@ -142,7 +133,7 @@ fn check_attribute_validity(
     match (def.value_req, &attr.value) {
         (attributes::Requirement::Must, None) => {
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.name_start,
                 attr.name_start + attr.raw_name.len(),
             );
@@ -159,7 +150,7 @@ fn check_attribute_validity(
         }
         (attributes::Requirement::Denied, Some(_)) => {
             let range = crate::util::byte_range_to_lsp_range(
-                text,
+                line_index,
                 attr.value_start.unwrap_or(attr.name_start),
                 attr.value_start
                     .map(|s| s + attr.value.as_ref().map(|v| v.len() + 2).unwrap_or(0))
@@ -187,7 +178,7 @@ fn check_attribute_validity(
             if let Some(pos) = mod_pos {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = crate::util::byte_range_to_lsp_range(text, start, end);
+                let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
@@ -209,7 +200,7 @@ fn check_attribute_validity(
             if let Some(pos) = mod_pos {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = crate::util::byte_range_to_lsp_range(text, start, end);
+                let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
@@ -233,7 +224,7 @@ fn is_global_modifier(key: &str) -> bool {
 fn check_expression_actions(
     attr: &DataAttribute,
     action_registry: &std::collections::BTreeMap<&str, actions::ActionDef>,
-    text: &str,
+    line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let value = match &attr.value {
@@ -266,7 +257,7 @@ fn check_expression_actions(
                         let value_start = attr.value_start.unwrap_or(0);
                         let start = value_start + 1 + i; // +1 for opening quote
                         let end = start + (j - i);
-                        let range = crate::util::byte_range_to_lsp_range(text, start, end);
+                        let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
                         diagnostics.push(Diagnostic {
                             range,
                             severity: Some(DiagnosticSeverity::WARNING),
@@ -289,7 +280,7 @@ fn check_expression_actions(
 
 fn check_undefined_signals(
     analysis: &crate::analysis::signals::SignalAnalysis,
-    text: &str,
+    line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
     project_index: Option<&ProjectIndex>,
 ) {
@@ -317,7 +308,7 @@ fn check_undefined_signals(
         }
 
         let range = crate::util::byte_range_to_lsp_range(
-            text,
+            line_index,
             ref_.byte_offset,
             ref_.byte_offset + 1 + ref_.name.len(),
         );
@@ -338,9 +329,15 @@ fn check_undefined_signals(
 mod tests {
     use super::*;
 
+    fn diags_for(html: &str) -> Vec<Diagnostic> {
+        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        generate(&line_index, &parsed.1, None)
+    }
+
     #[test]
     fn test_unknown_attribute() {
-        let diags = generate(r#"<div data-fake-thing="x"></div>"#, None);
+        let diags = diags_for(r#"<div data-fake-thing="x"></div>"#);
         assert!(diags
             .iter()
             .any(|d| d.message.contains("Unknown Datastar attribute")));
@@ -348,19 +345,19 @@ mod tests {
 
     #[test]
     fn test_missing_value() {
-        let diags = generate(r#"<div data-on:click></div>"#, None);
+        let diags = diags_for(r#"<div data-on:click></div>"#);
         assert!(diags.iter().any(|d| d.message.contains("Missing value")));
     }
 
     #[test]
     fn test_undefined_signal() {
-        let diags = generate(r#"<div data-text="$undefined"></div>"#, None);
+        let diags = diags_for(r#"<div data-text="$undefined"></div>"#);
         assert!(diags.iter().any(|d| d.message.contains("Undefined signal")));
     }
 
     #[test]
     fn test_valid_clean() {
-        let diags = generate(r#"<div data-signals:foo="1" data-text="$foo"></div>"#, None);
+        let diags = diags_for(r#"<div data-signals:foo="1" data-text="$foo"></div>"#);
         assert!(diags.is_empty());
     }
 }

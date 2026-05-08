@@ -1,60 +1,25 @@
 use tower_lsp::lsp_types::Position;
 
-/// Convert byte offset to LSP Position (line, character).
-pub fn byte_to_position(text: &str, byte_offset: usize) -> Position {
-    let byte_offset = byte_offset.min(text.len());
-    let mut line = 0u32;
-    let mut col = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if i >= byte_offset {
-            break;
-        }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-
-    Position {
-        line,
-        character: col,
-    }
-}
-
-/// Convert LSP Position to byte offset in text.
-pub fn position_to_byte_offset(text: &str, pos: Position) -> usize {
-    let mut line = 0u32;
-
-    for (i, c) in text.char_indices() {
-        if line == pos.line {
-            for (char_count, (j, _ch)) in text[i..].char_indices().enumerate() {
-                let char_count = char_count as u32;
-                if char_count >= pos.character {
-                    return i + j;
-                }
-            }
-            return text.len();
-        }
-        if c == '\n' {
-            line += 1;
-        }
-    }
-
-    text.len()
-}
-
-/// Convert byte range to LSP Range.
+/// Convert byte range to LSP Range using pre-computed line index.
+/// Cheap: O(log n) line lookup via binary search.
 pub fn byte_range_to_lsp_range(
-    text: &str,
+    line_index: &crate::line_index::LineIndex,
     start_byte: usize,
     end_byte: usize,
 ) -> tower_lsp::lsp_types::Range {
-    let start = byte_to_position(text, start_byte.min(text.len()));
-    let end = byte_to_position(text, end_byte.min(text.len()));
-    tower_lsp::lsp_types::Range { start, end }
+    let text_len = line_index.text().len();
+    let (start_line, start_char) = line_index.byte_to_position(start_byte.min(text_len));
+    let (end_line, end_char) = line_index.byte_to_position(end_byte.min(text_len));
+    tower_lsp::lsp_types::Range {
+        start: Position {
+            line: start_line,
+            character: start_char,
+        },
+        end: Position {
+            line: end_line,
+            character: end_char,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -62,24 +27,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_position_to_byte_offset() {
-        let text = "line1\nline2\nline3";
-        let pos = position_to_byte_offset(
-            text,
-            Position {
-                line: 1,
-                character: 2,
-            },
-        );
-        assert_eq!(pos, 8);
-        assert_eq!(&text[pos..pos + 1], "n");
-    }
+    fn test_byte_range_to_lsp_range() {
+        let idx = crate::line_index::LineIndex::new("ab\ncd".to_string());
+        let r = byte_range_to_lsp_range(&idx, 0, 1);
+        assert_eq!(r.start.line, 0);
+        assert_eq!(r.start.character, 0);
+        assert_eq!(r.end.line, 0);
+        assert_eq!(r.end.character, 1);
 
-    #[test]
-    fn test_byte_to_position() {
-        let text = "ab\ncd";
-        let pos = byte_to_position(text, 3);
-        assert_eq!(pos.line, 1);
-        assert_eq!(pos.character, 0);
+        let r2 = byte_range_to_lsp_range(&idx, 3, 4);
+        assert_eq!(r2.start.line, 1);
+        assert_eq!(r2.start.character, 0);
     }
 }

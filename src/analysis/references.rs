@@ -116,21 +116,23 @@ pub fn find_references(
 mod tests {
     use super::*;
 
+    fn refs_for(html: &str, cursor: &str) -> Vec<Location> {
+        let uri = Url::parse("file:///test.html").unwrap();
+        let offset = html.find(cursor).unwrap();
+        let line_index = crate::line_index::LineIndex::new(html.to_string());
+        let (line, col) = line_index.byte_to_position(offset);
+        let pos = Position {
+            line,
+            character: col + 1,
+        };
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        find_references(&line_index, pos, &uri, &analysis, None)
+    }
+
     #[test]
     fn test_find_references() {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span><button data-on:click="$counter++">+</button></div>"#;
-        let uri = Url::parse("file:///test.html").unwrap();
-
-        let dollar_pos = html.find("$counter").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let locs = find_references(&line_index, pos, &uri, &analysis, None);
-        // Should find: definition at data-signals:counter, ref at $counter in data-text, ref at $counter++ in data-on
+        let locs = refs_for(html, "$counter");
         assert!(
             locs.len() >= 3,
             "expected >=3 references, got {}",
@@ -140,18 +142,7 @@ mod tests {
 
     #[test]
     fn test_no_references_for_undefined() {
-        let html = r#"<div data-text="$foo"></div>"#;
-        let uri = Url::parse("file:///test.html").unwrap();
-
-        let dollar_pos = html.find("$foo").unwrap();
-        let pos = Position {
-            line: 0,
-            character: dollar_pos as u32 + 1,
-        };
-
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let locs = find_references(&line_index, pos, &uri, &analysis, None);
+        let locs = refs_for(r#"<div data-text="$foo"></div>"#, "$foo");
         assert!(
             locs.is_empty(),
             "undefined signal should have no references"

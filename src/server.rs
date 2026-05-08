@@ -154,13 +154,17 @@ impl LanguageServer for Backend {
             Some(li) => li,
             None => return Ok(None),
         };
-
         let data_attrs = self.project_index.attrs(uri).unwrap_or_default();
+        let signal_analysis = match self.project_index.analysis(uri) {
+            Some(a) => a,
+            None => return Ok(None),
+        };
 
         let ctx = completions::CompletionContext {
             line_index: &line_index,
             position,
             data_attrs,
+            signal_analysis: &signal_analysis,
         };
 
         let items = completions::generate(&ctx);
@@ -239,7 +243,7 @@ impl LanguageServer for Backend {
         let mut actions = Vec::new();
         for diag in &params.context.diagnostics {
             if diag.source.as_deref() == Some("datastar") {
-                actions.extend(code_actions::generate(line_index.text(), uri, diag));
+                actions.extend(code_actions::generate(&line_index, uri, diag));
             }
         }
 
@@ -288,8 +292,13 @@ impl Backend {
         self.doc_version.load(Ordering::Acquire) != version
     }
 
-    async fn publish_diagnostics(&self, uri: &Url, text: &str) {
-        let diags = diagnostics::generate(text, Some(&self.project_index));
+    async fn publish_diagnostics(&self, uri: &Url, _text: &str) {
+        let line_index = match self.project_index.line_index(uri) {
+            Some(li) => li,
+            None => return,
+        };
+        let attrs = self.project_index.attrs(uri).unwrap_or_default();
+        let diags = diagnostics::generate(&line_index, &attrs, Some(&self.project_index));
         self.client
             .publish_diagnostics(uri.clone(), diags, None)
             .await;

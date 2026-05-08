@@ -2,6 +2,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position,
 };
 
+use crate::analysis::signals::SignalAnalysis;
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
 use crate::parser::html::DataAttribute;
@@ -14,6 +15,8 @@ pub struct CompletionContext<'a> {
     pub position: Position,
     /// Parsed data attributes from the document
     pub data_attrs: Vec<DataAttribute>,
+    /// Pre-computed signal analysis
+    pub signal_analysis: &'a SignalAnalysis,
 }
 
 /// Generate completion items for the given context.
@@ -62,14 +65,14 @@ pub fn generate(ctx: &CompletionContext) -> Vec<CompletionItem> {
                 if relative_offset > 0 && relative_offset <= value.len() {
                     let before_cursor = &value[..relative_offset.min(value.len())];
                     if before_cursor.ends_with('$') || before_cursor.ends_with("$.") {
-                        items.extend(complete_signals(ctx.line_index.text(), &ctx.data_attrs));
+                        items.extend(complete_signals(ctx.signal_analysis, &ctx.data_attrs));
                     } else if before_cursor.ends_with('@') {
                         items.extend(complete_actions(&actions::all()));
                     } else if let Some(last_dollar) = before_cursor.rfind('$') {
                         // Cursor is inside a signal name like $foo|.bar
                         let after_dollar = &before_cursor[last_dollar + 1..];
                         if !after_dollar.contains(' ') && !after_dollar.contains('"') {
-                            items.extend(complete_signals(ctx.line_index.text(), &ctx.data_attrs));
+                            items.extend(complete_signals(ctx.signal_analysis, &ctx.data_attrs));
                         }
                     } else if let Some(last_at) = before_cursor.rfind('@') {
                         let after_at = &before_cursor[last_at + 1..];
@@ -180,9 +183,10 @@ fn complete_actions(
 }
 
 /// Complete signal names defined in the current document.
-fn complete_signals(text: &str, attributes: &[DataAttribute]) -> Vec<CompletionItem> {
-    let analysis = crate::analysis::signals::analyze_signals(text);
-
+fn complete_signals(
+    analysis: &SignalAnalysis,
+    attributes: &[DataAttribute],
+) -> Vec<CompletionItem> {
     let mut items: Vec<CompletionItem> = Vec::new();
 
     for (name, defs) in &analysis.definitions {
@@ -322,7 +326,8 @@ mod tests {
     fn test_complete_signals() {
         let html = r#"<div data-signals:foo="1" data-bind:bar><span data-text="$"></span></div>"#;
         let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let signals = complete_signals(html, &parsed.1);
+        let analysis = crate::analysis::signals::analyze_signals(html);
+        let signals = complete_signals(&analysis, &parsed.1);
         assert!(signals.iter().any(|s| s.label == "$foo"));
         assert!(signals.iter().any(|s| s.label == "$bar"));
     }

@@ -2,17 +2,19 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, Range, TextEdit, WorkspaceEdit,
 };
 
+use crate::line_index::LineIndex;
+
 /// Generate code actions for a given diagnostic.
 pub fn generate(
-    text: &str,
+    line_index: &LineIndex,
     uri: &tower_lsp::lsp_types::Url,
     diagnostic: &Diagnostic,
 ) -> Vec<CodeActionOrCommand> {
     let msg = &diagnostic.message;
     let range = diagnostic.range;
 
-    if msg.starts_with("Signal not defined locally") {
-        return generate_define_signal(text, uri, range, msg);
+    if msg.starts_with("Undefined signal") {
+        return generate_define_signal(line_index, uri, range, msg);
     }
 
     if msg.starts_with("Missing value:") {
@@ -32,12 +34,12 @@ pub fn generate(
 
 /// Code action: Add a data-signals definition for an undefined signal.
 fn generate_define_signal(
-    text: &str,
+    line_index: &LineIndex,
     uri: &tower_lsp::lsp_types::Url,
     _range: Range,
     msg: &str,
 ) -> Vec<CodeActionOrCommand> {
-    // Extract signal name from message: "Signal not defined locally: '$foo'..."
+    // Extract signal name from message: "Undefined signal: '$foo'..."
     let signal_name = msg.split('\'').nth(1).unwrap_or("").trim_start_matches('$');
 
     if signal_name.is_empty() {
@@ -46,9 +48,13 @@ fn generate_define_signal(
 
     // Find the nearest insertion point — after the closest parent element's opening tag,
     // or at the beginning of the document
-    let insertion_offset = find_signal_insertion_point(text);
+    let insertion_offset = find_signal_insertion_point(line_index.text());
 
-    let insert_pos = crate::util::byte_to_position(text, insertion_offset);
+    let (line, col) = line_index.byte_to_position(insertion_offset);
+    let insert_pos = tower_lsp::lsp_types::Position {
+        line,
+        character: col,
+    };
     let edit_text = format!("\n\t<div data-signals:{}=\"\" hidden></div>", signal_name);
 
     let edit = TextEdit {

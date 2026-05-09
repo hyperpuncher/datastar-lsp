@@ -1,5 +1,7 @@
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
+use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::ts_util;
 use crate::data::{actions, attributes, modifiers};
 use crate::line_index::LineIndex;
 use crate::util::byte_range_to_lsp_range;
@@ -8,15 +10,13 @@ use crate::util::byte_range_to_lsp_range;
 pub fn generate(
     line_index: &LineIndex,
     text: &str,
+    uri: &Url,
     project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     let mut parser = tree_sitter::Parser::new();
-    if parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .is_err()
-    {
+    if parser.set_language(&ts_util::language_for(uri)).is_err() {
         return diagnostics;
     }
     let tree = match parser.parse(text, None) {
@@ -30,20 +30,9 @@ pub fn generate(
     let action_registry = actions::all();
     let modifier_registry = modifiers::all();
 
-    let definers: std::collections::BTreeSet<&str> = [
-        "signals",
-        "bind",
-        "computed",
-        "ref",
-        "indicator",
-        "match-media",
-    ]
-    .iter()
-    .copied()
-    .collect();
     let defined_signals: std::collections::BTreeSet<String> = attrs
         .iter()
-        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .filter_map(|a| a.key.clone())
         .collect();
 
@@ -63,7 +52,7 @@ pub fn generate(
     if let Some(index) = project_index {
         for attr in &attrs {
             if let Some(value) = &attr.value {
-                for signal in scan_signals(value) {
+                for signal in signal_util::scan_signals(value) {
                     let top = signal.split('.').next().unwrap_or("");
                     if top == "evt" || top == "el" || top.starts_with("__") {
                         continue;
@@ -71,7 +60,7 @@ pub fn generate(
                     if defined_signals.contains(top) {
                         continue;
                     }
-                    if !index_find_def(index, top) {
+                    if !signal_util::index_find_def(index, top) {
                         if let Some(value_start) = attr.value_start {
                             if let Some(pos) = value.find(&format!("${signal}")) {
                                 let start = value_start + 1 + pos;
@@ -95,54 +84,6 @@ pub fn generate(
     }
 
     diagnostics
-}
-
-fn scan_signals(value: &str) -> Vec<String> {
-    let mut results = Vec::new();
-    let bytes = value.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
-            if next.is_ascii_alphabetic() || next == b'_' {
-                let start = i + 1;
-                let mut j = start;
-                while j < bytes.len()
-                    && (bytes[j].is_ascii_alphanumeric()
-                        || bytes[j] == b'_'
-                        || bytes[j] == b'-'
-                        || bytes[j] == b'.')
-                {
-                    j += 1;
-                }
-                if j > start {
-                    let raw = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
-                    let trimmed = raw
-                        .trim_end_matches("++")
-                        .trim_end_matches("--")
-                        .trim_end_matches('.');
-                    if !trimmed.is_empty() {
-                        results.push(trimmed.to_string());
-                    }
-                }
-                i = j;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    results
-}
-
-fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
-    index.iter().any(|e| {
-        let (_li, t) = e.value();
-        t.contains(&format!("data-signals:{name}"))
-            || t.contains(&format!("data-bind:{name}"))
-            || t.contains(&format!("data-computed:{name}"))
-            || t.contains(&format!("data-ref:{name}"))
-            || t.contains(&format!("data-indicator:{name}"))
-    })
 }
 
 fn check_attribute_validity(
@@ -284,7 +225,9 @@ fn check_attribute_validity(
             }
             continue;
         }
-        if !def.modifier_keys.contains(&mod_key.as_str()) && !is_global_modifier(mod_key) {
+        if !def.modifier_keys.contains(&mod_key.as_str())
+            && !signal_util::is_global_modifier(mod_key)
+        {
             if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
@@ -302,10 +245,6 @@ fn check_attribute_validity(
             }
         }
     }
-}
-
-fn is_global_modifier(key: &str) -> bool {
-    matches!(key, "case" | "delay" | "viewtransition")
 }
 
 fn check_value_actions(
@@ -365,7 +304,7 @@ fn check_value_signals(
         Some(v) => v,
         None => return,
     };
-    for signal in scan_signals(value) {
+    for signal in signal_util::scan_signals(value) {
         let top = signal.split('.').next().unwrap_or("");
         if top == "evt" || top == "el" || top.starts_with("__") {
             continue;
@@ -396,8 +335,9 @@ mod tests {
     use super::*;
 
     fn diags_for(html: &str) -> Vec<Diagnostic> {
+        let uri = Url::parse("file:///test.html").unwrap();
         let li = LineIndex::new(html.to_string());
-        generate(&li, html, None)
+        generate(&li, html, &uri, None)
     }
 
     #[test]

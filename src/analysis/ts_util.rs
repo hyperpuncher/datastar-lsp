@@ -12,6 +12,17 @@ pub struct AttrData {
     pub modifiers: Vec<(String, Vec<String>)>,
 }
 
+/// Pick the tree-sitter language for a file URI.
+/// HTML grammar works for most template languages; TypeScript for JSX/TSX.
+pub fn language_for(uri: &tower_lsp::lsp_types::Url) -> tree_sitter::Language {
+    let path = uri.path().to_lowercase();
+    if path.ends_with(".jsx") || path.ends_with(".tsx") {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    } else {
+        tree_sitter_html::LANGUAGE.into()
+    }
+}
+
 /// Collect all `data-*` attributes from a tree-sitter HTML parse tree.
 pub fn collect_from_tree(node: tree_sitter::Node, text: &str) -> Vec<AttrData> {
     let mut attrs = Vec::new();

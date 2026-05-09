@@ -1,6 +1,7 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::ts_util::AttrData;
+use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
 /// Find all references to a signal at the given position.
@@ -14,10 +15,7 @@ pub fn find_references(
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     let mut parser = tree_sitter::Parser::new();
-    if parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .is_err()
-    {
+    if parser.set_language(&ts_util::language_for(uri)).is_err() {
         return vec![];
     }
     let tree = match parser.parse(text, None) {
@@ -26,37 +24,13 @@ pub fn find_references(
     };
     let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
-    let signal_name = if let Some(name) = find_signal_at_cursor(&attrs, offset) {
-        name
-    } else {
-        return vec![];
+    let signal_name = match signal_util::find_signal_at_cursor(&attrs, offset) {
+        Some(name) => name,
+        None => return vec![],
     };
     let top = signal_name.split('.').next().unwrap_or("");
 
-    let definers: std::collections::BTreeSet<&str> = [
-        "signals",
-        "bind",
-        "computed",
-        "ref",
-        "indicator",
-        "match-media",
-    ]
-    .iter()
-    .copied()
-    .collect();
-
-    let is_defined = attrs
-        .iter()
-        .filter(|a| definers.contains(a.plugin_name.as_str()))
-        .any(|a| a.key.as_deref() == Some(top))
-        || project_index.as_ref().is_some_and(|idx| {
-            idx.iter().any(|e| {
-                let (_li, t) = e.value();
-                t.contains(&format!("data-signals:{top}"))
-                    || t.contains(&format!("data-bind:{top}"))
-            })
-        });
-    if !is_defined {
+    if !signal_util::is_defined(top, &attrs, project_index) {
         return vec![];
     }
 
@@ -64,7 +38,7 @@ pub fn find_references(
 
     // Local definitions
     for attr in &attrs {
-        if definers.contains(attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
+        if DEFINERS.contains(&attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
             let (line, col) = line_index.byte_to_position(attr.name_start);
             locations.push(Location {
                 uri: uri.clone(),
@@ -161,61 +135,6 @@ pub fn find_references(
     }
 
     locations
-}
-
-fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String> {
-    for attr in attrs {
-        let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
-            continue;
-        };
-        let value_end = value_start + value.len() + 2;
-        if offset < value_start || offset > value_end {
-            continue;
-        }
-        let rel = offset.saturating_sub(value_start + 1);
-        if rel >= value.len() {
-            return None;
-        }
-        let bytes = value.as_bytes();
-        if bytes[rel] == b'$' {
-            return read_signal_name(&value[rel + 1..]);
-        }
-        if bytes[rel].is_ascii_alphanumeric()
-            || bytes[rel] == b'_'
-            || bytes[rel] == b'-'
-            || bytes[rel] == b'.'
-        {
-            let mut start = rel;
-            while start > 0 {
-                let c = bytes[start - 1];
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                    start -= 1;
-                } else {
-                    break;
-                }
-            }
-            if start > 0 && bytes[start - 1] == b'$' {
-                return read_signal_name(&value[start..]);
-            }
-        }
-    }
-    None
-}
-
-fn read_signal_name(s: &str) -> Option<String> {
-    let end = s
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-        .unwrap_or(s.len());
-    let raw = &s[..end];
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 #[cfg(test)]

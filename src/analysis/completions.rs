@@ -1,20 +1,22 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position,
+    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position, Url,
 };
 
-use crate::analysis::ts_util::AttrData;
+use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
 
-pub fn generate(line_index: &LineIndex, text: &str, position: Position) -> Vec<CompletionItem> {
+pub fn generate(
+    line_index: &LineIndex,
+    text: &str,
+    position: Position,
+    uri: &Url,
+) -> Vec<CompletionItem> {
     let cursor_byte = line_index.position_to_byte_offset(position.line, position.character);
     let mut items = Vec::new();
 
     let mut parser = tree_sitter::Parser::new();
-    if parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .is_err()
-    {
+    if parser.set_language(&ts_util::language_for(uri)).is_err() {
         return vec![];
     }
     let tree = match parser.parse(text, None) {
@@ -293,6 +295,7 @@ mod tests {
         let line_index = LineIndex::new(html.to_string());
         let at_byte = html.find("@get").unwrap();
         let (l, c) = line_index.byte_to_position(at_byte);
+        let uri = Url::parse("file:///test.html").unwrap();
         let items = generate(
             &line_index,
             html,
@@ -300,6 +303,7 @@ mod tests {
                 line: l,
                 character: c,
             },
+            &uri,
         );
         assert!(
             items.iter().any(|i| i.label == "@get"),

@@ -1,5 +1,7 @@
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
 
+use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
 /// Find the definition of a signal or action at the given position.
@@ -13,9 +15,7 @@ pub fn goto_definition(
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .ok()?;
+    parser.set_language(&ts_util::language_for(uri)).ok()?;
     let tree = parser.parse(text, None)?;
     let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
@@ -35,20 +35,8 @@ pub fn goto_definition(
         let signal_name = signal_name_at_offset(value, rel)?;
         let top = signal_name.split('.').next().unwrap_or("");
 
-        let definers: std::collections::BTreeSet<&str> = [
-            "signals",
-            "bind",
-            "computed",
-            "ref",
-            "indicator",
-            "match-media",
-        ]
-        .iter()
-        .copied()
-        .collect();
-
         for def_attr in &attrs {
-            if definers.contains(def_attr.plugin_name.as_str())
+            if DEFINERS.contains(&def_attr.plugin_name.as_str())
                 && def_attr.key.as_deref() == Some(top)
             {
                 let pos = line_index.byte_to_position(def_attr.name_start);
@@ -110,7 +98,7 @@ fn signal_name_at_offset(value: &str, rel: usize) -> Option<String> {
         return None;
     }
     if bytes[rel] == b'$' {
-        return read_name(&value[rel + 1..]);
+        return signal_util::read_signal_name(&value[rel + 1..]);
     }
     if bytes[rel].is_ascii_alphanumeric()
         || bytes[rel] == b'_'
@@ -127,26 +115,10 @@ fn signal_name_at_offset(value: &str, rel: usize) -> Option<String> {
             }
         }
         if start > 0 && bytes[start - 1] == b'$' {
-            return read_name(&value[start..]);
+            return signal_util::read_signal_name(&value[start..]);
         }
     }
     None
-}
-
-fn read_name(s: &str) -> Option<String> {
-    let end = s
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-        .unwrap_or(s.len());
-    let raw = &s[..end];
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 #[cfg(test)]

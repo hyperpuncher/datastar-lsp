@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
-use crate::analysis::ts_util::AttrData;
+use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
 /// Rename a signal across the current document and all open files.
@@ -14,47 +15,22 @@ pub fn rename_signal(
     new_name: &str,
     project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) -> Option<HashMap<Url, Vec<TextEdit>>> {
-    if !is_valid_signal_name(new_name) {
+    if !signal_util::is_valid_signal_name(new_name) {
         return None;
     }
 
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .ok()?;
+    parser.set_language(&ts_util::language_for(uri)).ok()?;
     let tree = parser.parse(text, None)?;
     let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
-    let old_name =
-        find_signal_at_cursor(&attrs, offset).or_else(|| find_def_name_at(text, offset))?;
+    let old_name = signal_util::find_signal_at_cursor(&attrs, offset)
+        .or_else(|| find_def_name_at(text, offset))?;
     let top = old_name.split('.').next().unwrap_or("");
 
-    let definers: std::collections::BTreeSet<&str> = [
-        "signals",
-        "bind",
-        "computed",
-        "ref",
-        "indicator",
-        "match-media",
-    ]
-    .iter()
-    .copied()
-    .collect();
-
-    let is_defined = attrs
-        .iter()
-        .filter(|a| definers.contains(a.plugin_name.as_str()))
-        .any(|a| a.key.as_deref() == Some(top))
-        || project_index.as_ref().is_some_and(|idx| {
-            idx.iter().any(|e| {
-                let (_li, t) = e.value();
-                t.contains(&format!("data-signals:{top}"))
-                    || t.contains(&format!("data-bind:{top}"))
-            })
-        });
-    if !is_defined {
+    if !signal_util::is_defined(top, &attrs, project_index) {
         return None;
     }
 
@@ -63,7 +39,7 @@ pub fn rename_signal(
 
     // Rename definitions in this file
     for attr in &attrs {
-        if definers.contains(attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
+        if DEFINERS.contains(&attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
             let key_pos = attr.raw_name.find(':').unwrap_or(0);
             let start = attr.name_start + key_pos + 1;
             let (line, col) = line_index.byte_to_position(start);
@@ -116,18 +92,20 @@ pub fn rename_signal(
             if &cross_uri == uri {
                 continue;
             }
-            let (_cross_li, cross_text) = entry.value();
+            let (cross_li, cross_text) = entry.value();
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
-            for (pos, _) in cross_text.match_indices(&format!("${top}")) {
+            let top_with_dollar = format!("${top}");
+            for (pos, _) in cross_text.match_indices(&top_with_dollar) {
+                let (line, col) = cross_li.byte_to_position(pos);
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {
                         start: Position {
-                            line: 0,
-                            character: pos as u32,
+                            line,
+                            character: col,
                         },
                         end: Position {
-                            line: 0,
-                            character: pos as u32 + 1 + top.len() as u32,
+                            line,
+                            character: col + top_with_dollar.len() as u32,
                         },
                     },
                     new_text: format!("${new_name}"),
@@ -140,45 +118,6 @@ pub fn rename_signal(
         return None;
     }
     Some(changes)
-}
-
-fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String> {
-    for attr in attrs {
-        let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
-            continue;
-        };
-        let value_end = value_start + value.len() + 2;
-        if offset < value_start || offset > value_end {
-            continue;
-        }
-        let rel = offset.saturating_sub(value_start + 1);
-        if rel >= value.len() {
-            return None;
-        }
-        let bytes = value.as_bytes();
-        if bytes[rel] == b'$' {
-            return read_signal_name(&value[rel + 1..]);
-        }
-        if bytes[rel].is_ascii_alphanumeric()
-            || bytes[rel] == b'_'
-            || bytes[rel] == b'-'
-            || bytes[rel] == b'.'
-        {
-            let mut start = rel;
-            while start > 0 {
-                let c = bytes[start - 1];
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                    start -= 1;
-                } else {
-                    break;
-                }
-            }
-            if start > 0 && bytes[start - 1] == b'$' {
-                return read_signal_name(&value[start..]);
-            }
-        }
-    }
-    None
 }
 
 fn find_def_name_at(text: &str, offset: usize) -> Option<String> {
@@ -208,29 +147,6 @@ fn find_def_name_at(text: &str, offset: usize) -> Option<String> {
         i -= 1;
     }
     None
-}
-
-fn read_signal_name(s: &str) -> Option<String> {
-    let end = s
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-        .unwrap_or(s.len());
-    let raw = &s[..end];
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn is_valid_signal_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[cfg(test)]

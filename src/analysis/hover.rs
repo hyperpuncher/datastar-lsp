@@ -1,15 +1,20 @@
-use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
+use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
+use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::ts_util;
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
 
-pub fn generate(line_index: &LineIndex, text: &str, position: Position) -> Option<Hover> {
+pub fn generate(
+    line_index: &LineIndex,
+    text: &str,
+    position: Position,
+    uri: &Url,
+) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
     let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_html::LANGUAGE.into())
-        .ok()?;
+    parser.set_language(&ts_util::language_for(uri)).ok()?;
     let tree = parser.parse(text, None)?;
     let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
@@ -94,7 +99,7 @@ fn hover_value_text(
     }
 
     if bytes[rel] == b'$' {
-        if let Some(name) = read_signal_name(&value[rel + 1..]) {
+        if let Some(name) = signal_util::read_signal_name(&value[rel + 1..]) {
             return hover_signal(&name, attrs);
         }
     }
@@ -117,7 +122,8 @@ fn hover_value_text(
             return hover_action_name(value, start - 1);
         }
         if start > 0 && bytes[start - 1] == b'$' {
-            return read_signal_name(&value[start..]).and_then(|n| hover_signal(&n, attrs));
+            return signal_util::read_signal_name(&value[start..])
+                .and_then(|n| hover_signal(&n, attrs));
         }
     }
 
@@ -138,20 +144,9 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
         );
     }
 
-    let definers: std::collections::BTreeSet<&str> = [
-        "signals",
-        "bind",
-        "computed",
-        "ref",
-        "indicator",
-        "match-media",
-    ]
-    .iter()
-    .copied()
-    .collect();
     let defined = attrs
         .iter()
-        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .any(|a| a.key.as_deref() == Some(top));
 
     if defined {
@@ -187,22 +182,6 @@ fn hover_action_name(value: &str, offset: usize) -> Option<Hover> {
     }
 }
 
-fn read_signal_name(after_dollar: &str) -> Option<String> {
-    let end = after_dollar
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-        .unwrap_or(after_dollar.len());
-    let raw = &after_dollar[..end];
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 fn mk_hover(markdown: &str) -> Option<Hover> {
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -218,6 +197,7 @@ mod tests {
     use super::*;
 
     fn hover_at(html: &str, cursor_pattern: &str) -> Option<Hover> {
+        let uri = Url::parse("file:///test.html").unwrap();
         let offset = html.find(cursor_pattern).unwrap();
         let li = LineIndex::new(html.to_string());
         let (line, col) = li.byte_to_position(offset);
@@ -228,6 +208,7 @@ mod tests {
                 line,
                 character: col,
             },
+            &uri,
         )
     }
 
@@ -244,6 +225,7 @@ mod tests {
 
     #[test]
     fn test_hover_on_attribute() {
+        let uri = Url::parse("file:///test.html").unwrap();
         let html = r#"<div data-show="true"></div>"#;
         let li = LineIndex::new(html.to_string());
         let h = generate(
@@ -253,6 +235,7 @@ mod tests {
                 line: 0,
                 character: 7,
             },
+            &uri,
         )
         .expect("hover at char 7");
         let v = match &h.contents {
@@ -261,54 +244,53 @@ mod tests {
         };
         assert!(v.contains("data-show"), "hover: {v}");
     }
-}
 
-#[test]
-fn test_hover_on_count_decrement() {
-    let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
-    // Cursor on $ in $count--
-    let offset = html.find("$count").unwrap();
-    let li = LineIndex::new(html.to_string());
-    let (line, col) = li.byte_to_position(offset);
-    let h = generate(
-        &li,
-        html,
-        Position {
-            line,
-            character: col,
-        },
-    )
-    .expect("hover for $count");
-    let v = match &h.contents {
-        HoverContents::Markup(m) => &m.value,
-        _ => panic!("expected markup"),
-    };
-    assert!(!v.contains("Undefined"), "should be defined, got: {v}");
-}
-
-#[test]
-fn test_hover_on_minus_sign() {
-    let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
-    // Cursor on first '-' in $count--
-    let offset = html.find("$count--").unwrap() + 6; // cursor on first '-'
-    let li = LineIndex::new(html.to_string());
-    let (line, col) = li.byte_to_position(offset);
-    let h = generate(
-        &li,
-        html,
-        Position {
-            line,
-            character: col,
-        },
-    );
-    if let Some(h) = h {
+    #[test]
+    fn test_hover_on_count_decrement() {
+        let uri = Url::parse("file:///test.html").unwrap();
+        let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
+        let offset = html.find("$count").unwrap();
+        let li = LineIndex::new(html.to_string());
+        let (line, col) = li.byte_to_position(offset);
+        let h = generate(
+            &li,
+            html,
+            Position {
+                line,
+                character: col,
+            },
+            &uri,
+        )
+        .expect("hover for $count");
         let v = match &h.contents {
             HoverContents::Markup(m) => &m.value,
             _ => panic!("expected markup"),
         };
-        eprintln!("Hover on '-': {v}");
         assert!(!v.contains("Undefined"), "should be defined, got: {v}");
-    } else {
-        eprintln!("No hover on '-' — expected some result");
+    }
+
+    #[test]
+    fn test_hover_on_minus_sign() {
+        let uri = Url::parse("file:///test.html").unwrap();
+        let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
+        let offset = html.find("$count--").unwrap() + 6;
+        let li = LineIndex::new(html.to_string());
+        let (line, col) = li.byte_to_position(offset);
+        let h = generate(
+            &li,
+            html,
+            Position {
+                line,
+                character: col,
+            },
+            &uri,
+        );
+        if let Some(h) = h {
+            let v = match &h.contents {
+                HoverContents::Markup(m) => &m.value,
+                _ => panic!("expected markup"),
+            };
+            assert!(!v.contains("Undefined"), "should be defined, got: {v}");
+        }
     }
 }

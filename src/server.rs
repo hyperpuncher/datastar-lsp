@@ -97,7 +97,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        Ok(hover::generate(&line_index, &text, position))
+        Ok(hover::generate(&line_index, &text, position, uri))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -109,7 +109,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let items = completions::generate(&line_index, &text, position);
+        let items = completions::generate(&line_index, &text, position, uri);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -203,7 +203,7 @@ impl Backend {
             Some(e) => e,
             None => return,
         };
-        let diags = diagnostics::generate(&line_index, text, Some(&self.project_index));
+        let diags = diagnostics::generate(&line_index, text, uri, Some(&self.project_index));
         self.client
             .publish_diagnostics(uri.clone(), diags, None)
             .await;

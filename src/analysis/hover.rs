@@ -117,14 +117,7 @@ fn hover_value_text(
             return hover_action_name(value, start - 1);
         }
         if start > 0 && bytes[start - 1] == b'$' {
-            let name = &value[start..];
-            let name = name
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-                .next()
-                .unwrap_or("");
-            if !name.is_empty() {
-                return hover_signal(name, attrs);
-            }
+            return read_signal_name(&value[start..]).and_then(|n| hover_signal(&n, attrs));
         }
     }
 
@@ -267,5 +260,55 @@ mod tests {
             _ => panic!("expected markup"),
         };
         assert!(v.contains("data-show"), "hover: {v}");
+    }
+}
+
+#[test]
+fn test_hover_on_count_decrement() {
+    let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
+    // Cursor on $ in $count--
+    let offset = html.find("$count").unwrap();
+    let li = LineIndex::new(html.to_string());
+    let (line, col) = li.byte_to_position(offset);
+    let h = generate(
+        &li,
+        html,
+        Position {
+            line,
+            character: col,
+        },
+    )
+    .expect("hover for $count");
+    let v = match &h.contents {
+        HoverContents::Markup(m) => &m.value,
+        _ => panic!("expected markup"),
+    };
+    assert!(!v.contains("Undefined"), "should be defined, got: {v}");
+}
+
+#[test]
+fn test_hover_on_minus_sign() {
+    let html = r#"<input data-bind:count /><button data-on:click="$count--">-</button>"#;
+    // Cursor on first '-' in $count--
+    let offset = html.find("$count--").unwrap() + 6; // cursor on first '-'
+    let li = LineIndex::new(html.to_string());
+    let (line, col) = li.byte_to_position(offset);
+    let h = generate(
+        &li,
+        html,
+        Position {
+            line,
+            character: col,
+        },
+    );
+    if let Some(h) = h {
+        let v = match &h.contents {
+            HoverContents::Markup(m) => &m.value,
+            _ => panic!("expected markup"),
+        };
+        eprintln!("Hover on '-': {v}");
+        assert!(!v.contains("Undefined"), "should be defined, got: {v}");
+    } else {
+        eprintln!("No hover on '-' — expected some result");
     }
 }

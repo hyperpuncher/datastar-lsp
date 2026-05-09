@@ -4,3 +4,7 @@
 vscode/node_modules
 vscode/*.vsix
 vscode/bun.lock
+
+# Zed extension build artifacts
+zed/target
+zed/extension.wasm

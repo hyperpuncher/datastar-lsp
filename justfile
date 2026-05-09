@@ -17,3 +17,7 @@ build:
 fix:
     cargo clippy --fix --allow-dirty --lib --tests
     cargo fmt
+
+# Build Zed extension WASM
+zed-build:
+    cd zed && cargo build --target wasm32-wasip1 --release

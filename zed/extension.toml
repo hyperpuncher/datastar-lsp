@@ -1,0 +1,19 @@
+id = "datastar"
+name = "Datastar LSP"
+version = "0.1.0"
+schema_version = 1
+authors = ["hyperpuncher"]
+description = "Datastar hypermedia framework language support — data-* attributes, signals, actions"
+repository = "https://github.com/hyperpuncher/datastar-lsp"
+
+[language_servers.datastar-lsp]
+name = "Datastar LSP"
+languages = ["HTML", "JSX", "TSX", "Templ", "HEEx", "Blade"]
+
+[language_servers.datastar-lsp.language_ids]
+"HTML" = "html"
+"JSX" = "javascriptreact"
+"TSX" = "typescriptreact"
+"Templ" = "templ"
+"HEEx" = "heex"
+"Blade" = "blade"

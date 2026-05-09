@@ -15,16 +15,9 @@ pub fn generate(
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&ts_util::language_for(uri)).is_err() {
+    let Some((_, attrs)) = ts_util::parse_and_collect(text, uri) else {
         return diagnostics;
-    }
-    let tree = match parser.parse(text, None) {
-        Some(t) => t,
-        None => return diagnostics,
     };
-
-    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
     let attr_registry = attributes::all();
     let action_registry = actions::all();
@@ -54,7 +47,7 @@ pub fn generate(
             if let Some(value) = &attr.value {
                 for signal in signal_util::scan_signals(value) {
                     let top = signal.split('.').next().unwrap_or("");
-                    if top == "evt" || top == "el" || top.starts_with("__") {
+                    if signal_util::is_builtin_signal(top) {
                         continue;
                     }
                     if defined_signals.contains(top) {
@@ -63,7 +56,7 @@ pub fn generate(
                     if !signal_util::index_find_def(index, top) {
                         if let Some(value_start) = attr.value_start {
                             if let Some(pos) = value.find(&format!("${signal}")) {
-                                let start = value_start + 1 + pos;
+                                let start = value_start + pos;
                                 let end = start + 1 + signal.len();
                                 let range = byte_range_to_lsp_range(line_index, start, end);
                                 diagnostics.push(Diagnostic {
@@ -273,7 +266,7 @@ fn check_value_actions(
                     && !name.starts_with(|c: char| c.is_ascii_uppercase())
                 {
                     let value_start = attr.value_start.unwrap_or(0);
-                    let start = value_start + 1 + i;
+                    let start = value_start + i;
                     let end = start + (j - i);
                     let range = byte_range_to_lsp_range(line_index, start, end);
                     diagnostics.push(Diagnostic {
@@ -306,13 +299,13 @@ fn check_value_signals(
     };
     for signal in signal_util::scan_signals(value) {
         let top = signal.split('.').next().unwrap_or("");
-        if top == "evt" || top == "el" || top.starts_with("__") {
+        if signal_util::is_builtin_signal(top) {
             continue;
         }
         if !defined.contains(top) {
             if let Some(value_start) = attr.value_start {
                 if let Some(pos) = value.find(&format!("${signal}")) {
-                    let start = value_start + 1 + pos;
+                    let start = value_start + pos;
                     let end = start + 1 + signal.len();
                     let range = byte_range_to_lsp_range(line_index, start, end);
                     diagnostics.push(Diagnostic {

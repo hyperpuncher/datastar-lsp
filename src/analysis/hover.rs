@@ -13,19 +13,16 @@ pub fn generate(
 ) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&ts_util::language_for(uri)).ok()?;
-    let tree = parser.parse(text, None)?;
-    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
+    let (_, attrs) = ts_util::parse_and_collect(text, uri)?;
 
     for attr in &attrs {
         if offset >= attr.name_start && offset <= attr.name_start + attr.name_len {
             return hover_attribute_node(attr);
         }
         if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
-            let value_end = value_start + value.len() + 2;
+            let value_end = value_start + value.len();
             if offset >= value_start && offset <= value_end {
-                let rel = offset.saturating_sub(value_start + 1);
+                let rel = offset.saturating_sub(value_start);
                 if rel < value.len() {
                     return hover_value_text(value, rel, &attrs);
                 }
@@ -98,17 +95,23 @@ fn hover_value_text(
         return None;
     }
 
+    // Direct $ hit: read signal name immediately
     if bytes[rel] == b'$' {
-        if let Some(name) = signal_util::read_signal_name(&value[rel + 1..]) {
-            return hover_signal(&name, attrs);
-        }
+        return signal_util::read_signal_name(&value[rel + 1..])
+            .and_then(|n| hover_signal(&n, attrs));
     }
 
+    // Direct @ hit: read action name
     if bytes[rel] == b'@' {
         return hover_action_name(value, rel);
     }
 
-    if bytes[rel].is_ascii_alphanumeric() || bytes[rel] == b'_' {
+    // Alpha-ish char: backtrack to find leading $ or @
+    if bytes[rel].is_ascii_alphanumeric()
+        || bytes[rel] == b'_'
+        || bytes[rel] == b'-'
+        || bytes[rel] == b'.'
+    {
         let mut start = rel;
         while start > 0 {
             let c = bytes[start - 1];
@@ -118,12 +121,12 @@ fn hover_value_text(
                 break;
             }
         }
-        if start > 0 && bytes[start - 1] == b'@' {
-            return hover_action_name(value, start - 1);
-        }
         if start > 0 && bytes[start - 1] == b'$' {
             return signal_util::read_signal_name(&value[start..])
                 .and_then(|n| hover_signal(&n, attrs));
+        }
+        if start > 0 && bytes[start - 1] == b'@' {
+            return hover_action_name(value, start - 1);
         }
     }
 

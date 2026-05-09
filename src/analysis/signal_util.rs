@@ -10,6 +10,20 @@ pub const DEFINERS: &[&str] = &[
     "match-media",
 ];
 
+/// Full `data-{prefix}:` strings for cross-file string scanning.
+pub const DEFINER_PREFIXES: &[&str] = &[
+    "data-signals:",
+    "data-bind:",
+    "data-computed:",
+    "data-ref:",
+    "data-indicator:",
+];
+
+/// Return true if the top-level signal name is a builtin (evt, el, __*).
+pub fn is_builtin_signal(top: &str) -> bool {
+    top == "evt" || top == "el" || top.starts_with("__")
+}
+
 /// Global modifiers that work on any attribute.
 pub fn is_global_modifier(key: &str) -> bool {
     matches!(key, "case" | "delay" | "viewtransition")
@@ -76,11 +90,11 @@ pub fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String
         let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
             continue;
         };
-        let value_end = value_start + value.len() + 2;
+        let value_end = value_start + value.len();
         if offset < value_start || offset > value_end {
             continue;
         }
-        let rel = offset.saturating_sub(value_start + 1);
+        let rel = offset.saturating_sub(value_start);
         if rel >= value.len() {
             return None;
         }
@@ -133,11 +147,9 @@ pub fn is_defined(
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
     index.iter().any(|e| {
         let (_li, t) = e.value();
-        t.contains(&format!("data-signals:{name}"))
-            || t.contains(&format!("data-bind:{name}"))
-            || t.contains(&format!("data-computed:{name}"))
-            || t.contains(&format!("data-ref:{name}"))
-            || t.contains(&format!("data-indicator:{name}"))
+        DEFINER_PREFIXES
+            .iter()
+            .any(|prefix| t.contains(&format!("{prefix}{name}")))
     })
 }
 

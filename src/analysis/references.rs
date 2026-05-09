@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::signal_util::{self, DEFINERS, DEFINER_PREFIXES};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
@@ -14,15 +14,9 @@ pub fn find_references(
 ) -> Vec<Location> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&ts_util::language_for(uri)).is_err() {
+    let Some((_, attrs)) = ts_util::parse_and_collect(text, uri) else {
         return vec![];
-    }
-    let tree = match parser.parse(text, None) {
-        Some(t) => t,
-        None => return vec![],
     };
-    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
     let signal_name = match signal_util::find_signal_at_cursor(&attrs, offset) {
         Some(name) => name,
@@ -63,7 +57,7 @@ pub fn find_references(
         };
         let mut search = value.as_str();
         while let Some(pos) = search.find(&format!("${top}")) {
-            let byte_pos = value_start + 1 + pos + (value.len() - search.len());
+            let byte_pos = value_start + pos + (value.len() - search.len());
             let (line, col) = line_index.byte_to_position(byte_pos);
             locations.push(Location {
                 uri: uri.clone(),
@@ -89,13 +83,7 @@ pub fn find_references(
             if entry.key() == uri {
                 continue;
             }
-            for prefix in &[
-                "data-signals:",
-                "data-bind:",
-                "data-computed:",
-                "data-ref:",
-                "data-indicator:",
-            ] {
+            for prefix in DEFINER_PREFIXES {
                 let pattern = format!("{prefix}{top}");
                 for (pos, _) in cross_text.match_indices(&pattern) {
                     let (line, col) = cross_li.byte_to_position(pos + prefix.len());

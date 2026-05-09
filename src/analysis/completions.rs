@@ -2,6 +2,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position, Url,
 };
 
+use crate::analysis::signal_util::DEFINERS;
 use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
@@ -15,17 +16,11 @@ pub fn generate(
     let cursor_byte = line_index.position_to_byte_offset(position.line, position.character);
     let mut items = Vec::new();
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&ts_util::language_for(uri)).is_err() {
+    let Some((_, attrs)) = ts_util::parse_and_collect(text, uri) else {
         return vec![];
-    }
-    let tree = match parser.parse(text, None) {
-        Some(t) => t,
-        None => return vec![],
     };
-    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
-    if let Some(attr) = find_attr_at_cursor(&attrs, cursor_byte) {
+    if let Some(attr) = ts_util::find_attr_at_cursor(&attrs, cursor_byte) {
         // In attribute name
         if cursor_byte >= attr.name_start && cursor_byte <= attr.name_start + attr.name_len {
             if let Some(colon_pos) = attr.raw_name.find(':') {
@@ -43,9 +38,9 @@ pub fn generate(
 
         // In attribute value
         if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
-            let value_end = value_start + value.len() + 2;
+            let value_end = value_start + value.len();
             if cursor_byte >= value_start && cursor_byte <= value_end {
-                let rel = cursor_byte.saturating_sub(value_start + 1);
+                let rel = cursor_byte.saturating_sub(value_start);
                 if rel > 0 && rel <= value.len() {
                     let before = &value[..rel.min(value.len())];
                     if before.ends_with('$') || before.ends_with("$.") {
@@ -78,16 +73,6 @@ pub fn generate(
 
     items.extend(complete_attribute_names(&attrs));
     deduplicate_and_sort(items)
-}
-
-fn find_attr_at_cursor(attrs: &[AttrData], offset: usize) -> Option<&AttrData> {
-    attrs.iter().find(|a| {
-        (offset >= a.name_start && offset <= a.name_start + a.name_len)
-            || a.value_start.is_some_and(|vs| {
-                let ve = vs + a.value.as_ref().map(|v| v.len()).unwrap_or(0) + 2;
-                offset >= vs && offset <= ve
-            })
-    })
 }
 
 fn complete_attribute_names(existing: &[AttrData]) -> Vec<CompletionItem> {
@@ -160,22 +145,10 @@ fn complete_actions() -> Vec<CompletionItem> {
 }
 
 fn complete_signals(attrs: &[AttrData]) -> Vec<CompletionItem> {
-    let definers: std::collections::BTreeSet<&str> = [
-        "signals",
-        "bind",
-        "computed",
-        "ref",
-        "indicator",
-        "match-media",
-    ]
-    .iter()
-    .copied()
-    .collect();
-
     let mut seen = std::collections::BTreeSet::new();
     attrs
         .iter()
-        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .filter_map(|a| a.key.as_ref())
         .filter(|k| seen.insert(*k))
         .map(|name| CompletionItem {

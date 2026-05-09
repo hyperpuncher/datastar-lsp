@@ -22,6 +22,29 @@ pub fn language_for(uri: &tower_lsp::lsp_types::Url) -> tree_sitter::Language {
     }
 }
 
+/// Find which attribute (by byte range) contains the given offset.
+pub fn find_attr_at_cursor(attrs: &[AttrData], offset: usize) -> Option<&AttrData> {
+    attrs.iter().find(|a| {
+        (offset >= a.name_start && offset <= a.name_start + a.name_len)
+            || a.value_start.is_some_and(|vs| {
+                let ve = vs + a.value.as_ref().map(|v| v.len()).unwrap_or(0);
+                offset >= vs && offset <= ve
+            })
+    })
+}
+
+/// Full parse + collect: create parser, set language, parse text, collect attrs.
+pub fn parse_and_collect(
+    text: &str,
+    uri: &tower_lsp::lsp_types::Url,
+) -> Option<(tree_sitter::Tree, Vec<AttrData>)> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language_for(uri)).ok()?;
+    let tree = parser.parse(text, None)?;
+    let attrs = collect_from_tree(tree.root_node(), text);
+    Some((tree, attrs))
+}
+
 /// Collect all `data-*` attributes from a tree-sitter parse tree.
 pub fn collect_from_tree(node: tree_sitter::Node, text: &str) -> Vec<AttrData> {
     let mut attrs = Vec::new();
@@ -60,11 +83,11 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
                 name_start = child.start_byte();
                 name = child.utf8_text(src).ok().map(String::from);
             }
-            // Simple quoted value — HTML
+            // Simple quoted value — HTML (node text is "...content...")
             "attribute_value" | "quoted_attribute_value" => {
                 let raw = child.utf8_text(src).ok()?;
-                value = Some(raw.trim_matches(['"', '\''].as_ref()).to_string());
-                value_start = Some(child.start_byte());
+                value = Some(raw[1..raw.len() - 1].to_string());
+                value_start = Some(child.start_byte() + 1);
             }
             // JSX string value (includes quotes, extract inner fragment)
             "string" => {
@@ -81,14 +104,15 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
                 }
                 // Fallback: strip quotes manually
                 if value.is_none() {
-                    value = Some(raw.trim_matches(['"', '\''].as_ref()).to_string());
-                    value_start = Some(child.start_byte());
+                    value = Some(raw[1..raw.len() - 1].to_string());
+                    value_start = Some(child.start_byte() + 1);
                 }
             }
             // JSX expression (template literal or JS): `{...}`
             "jsx_expression" => {
-                value = child.utf8_text(src).ok().map(String::from);
-                value_start = Some(child.start_byte());
+                let raw = child.utf8_text(src).ok()?;
+                value = Some(raw[1..raw.len() - 1].to_string());
+                value_start = Some(child.start_byte() + 1);
             }
             _ => {}
         }

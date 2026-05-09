@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::signal_util::{self, DEFINERS, DEFINER_PREFIXES};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
@@ -21,10 +21,7 @@ pub fn rename_signal(
 
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&ts_util::language_for(uri)).ok()?;
-    let tree = parser.parse(text, None)?;
-    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
+    let (_, attrs) = ts_util::parse_and_collect(text, uri)?;
 
     let old_name = signal_util::find_signal_at_cursor(&attrs, offset)
         .or_else(|| find_def_name_at(text, offset))?;
@@ -66,8 +63,10 @@ pub fn rename_signal(
         };
         let mut search = value.as_str();
         while let Some(pos) = search.find(&format!("${top}")) {
-            let byte_pos = value_start + 1 + pos + (value.len() - search.len());
-            let (line, col) = line_index.byte_to_position(byte_pos);
+            // value_start points into original text; for HTML it's after the opening quote.
+            // pos is a byte offset within `value` (the unquoted contents).
+            let byte_pos = value_start + pos;
+            let (line, col) = line_index.byte_to_position(byte_pos + 1); // +1 to skip $
             edits.push(TextEdit {
                 range: tower_lsp::lsp_types::Range {
                     start: Position {
@@ -76,10 +75,10 @@ pub fn rename_signal(
                     },
                     end: Position {
                         line,
-                        character: col + 1 + top.len() as u32,
+                        character: col + top.len() as u32,
                     },
                 },
-                new_text: format!("${new_name}"),
+                new_text: new_name.to_string(),
             });
             search = &search[pos + 1..];
         }
@@ -96,7 +95,7 @@ pub fn rename_signal(
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
             let top_with_dollar = format!("${top}");
             for (pos, _) in cross_text.match_indices(&top_with_dollar) {
-                let (line, col) = cross_li.byte_to_position(pos);
+                let (line, col) = cross_li.byte_to_position(pos + 1); // +1 to skip $
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {
                         start: Position {
@@ -105,10 +104,10 @@ pub fn rename_signal(
                         },
                         end: Position {
                             line,
-                            character: col + top_with_dollar.len() as u32,
+                            character: col + top.len() as u32,
                         },
                     },
-                    new_text: format!("${new_name}"),
+                    new_text: new_name.to_string(),
                 });
             }
         }
@@ -126,11 +125,9 @@ fn find_def_name_at(text: &str, offset: usize) -> Option<String> {
     while i > 0 {
         if bytes[i as usize] == b':' {
             let before = std::str::from_utf8(&bytes[..i as usize]).ok()?;
-            let is_definer = before.ends_with("data-signals")
-                || before.ends_with("data-bind")
-                || before.ends_with("data-computed")
-                || before.ends_with("data-ref")
-                || before.ends_with("data-indicator");
+            let is_definer = DEFINER_PREFIXES
+                .iter()
+                .any(|p| before.ends_with(&p[0..p.len() - 1]));
             if is_definer {
                 let after = &bytes[i as usize + 1..];
                 let end = after

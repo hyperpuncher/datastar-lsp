@@ -124,7 +124,7 @@ pub fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String
     None
 }
 
-/// Check if a signal name is defined in a set of definition attr keys.
+/// Check if a signal name is defined locally (attrs) or across the project index.
 pub fn is_defined(
     top: &str,
     attrs: &[AttrData],
@@ -134,13 +134,9 @@ pub fn is_defined(
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .any(|a| a.key.as_deref() == Some(top))
-        || project_index.as_ref().is_some_and(|idx| {
-            idx.iter().any(|e| {
-                let (_li, t) = e.value();
-                t.contains(&format!("data-signals:{top}"))
-                    || t.contains(&format!("data-bind:{top}"))
-            })
-        })
+        || project_index
+            .as_ref()
+            .is_some_and(|idx| index_find_def(idx, top))
 }
 
 /// Check if a signal name is found in cross-file index text.

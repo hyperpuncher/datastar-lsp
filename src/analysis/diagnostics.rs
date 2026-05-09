@@ -42,37 +42,15 @@ pub fn generate(
     }
 
     // Cross-file signal check
-    if let Some(index) = project_index {
+    if project_index.is_some() {
         for attr in &attrs {
-            if let Some(value) = &attr.value {
-                for signal in signal_util::scan_signals(value) {
-                    let top = signal.split('.').next().unwrap_or("");
-                    if signal_util::is_builtin_signal(top) {
-                        continue;
-                    }
-                    if defined_signals.contains(top) {
-                        continue;
-                    }
-                    if !signal_util::index_find_def(index, top) {
-                        if let Some(value_start) = attr.value_start {
-                            if let Some(pos) = value.find(&format!("${signal}")) {
-                                let start = value_start + pos;
-                                let end = start + 1 + signal.len();
-                                let range = byte_range_to_lsp_range(line_index, start, end);
-                                diagnostics.push(Diagnostic {
-                                    range,
-                                    severity: Some(DiagnosticSeverity::HINT),
-                                    source: Some("datastar".to_string()),
-                                    message: format!(
-                                        "Undefined signal: '${signal}' is not defined in any open file."
-                                    ),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+            emit_undefined_signals(
+                attr,
+                line_index,
+                &mut diagnostics,
+                &defined_signals,
+                project_index,
+            );
         }
     }
 
@@ -183,7 +161,7 @@ fn check_attribute_validity(
             let start = attr.value_start.unwrap_or(attr.name_start);
             let end = attr
                 .value_start
-                .map(|s| s + attr.value.as_ref().map(|v| v.len() + 2).unwrap_or(0))
+                .map(|s| s + attr.value.as_ref().map(|v| v.len()).unwrap_or(0))
                 .unwrap_or(attr.name_start + attr.name_len);
             let range = byte_range_to_lsp_range(line_index, start, end);
             diagnostics.push(Diagnostic {
@@ -293,6 +271,18 @@ fn check_value_signals(
     diagnostics: &mut Vec<Diagnostic>,
     defined: &std::collections::BTreeSet<String>,
 ) {
+    emit_undefined_signals(attr, line_index, diagnostics, defined, None);
+}
+
+/// Scan a value for `$signal` references and emit diagnostics for undefined signals.
+/// If `project_index` is Some, also checks cross-file definitions.
+fn emit_undefined_signals(
+    attr: &crate::analysis::ts_util::AttrData,
+    line_index: &LineIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+    defined: &std::collections::BTreeSet<String>,
+    project_index: Option<&crate::analysis::project_index::ProjectIndex>,
+) {
     let value = match &attr.value {
         Some(v) => v,
         None => return,
@@ -302,24 +292,37 @@ fn check_value_signals(
         if signal_util::is_builtin_signal(top) {
             continue;
         }
-        if !defined.contains(top) {
-            if let Some(value_start) = attr.value_start {
-                if let Some(pos) = value.find(&format!("${signal}")) {
-                    let start = value_start + pos;
-                    let end = start + 1 + signal.len();
-                    let range = byte_range_to_lsp_range(line_index, start, end);
-                    diagnostics.push(Diagnostic {
-                        range,
-                        severity: Some(DiagnosticSeverity::HINT),
-                        source: Some("datastar".to_string()),
-                        message: format!(
-                            "Undefined signal: '${signal}' is not defined in this document."
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
+        if defined.contains(top) {
+            continue;
         }
+        if let Some(index) = project_index {
+            if !signal_util::index_find_def(index, top) {
+                emit_undefined(attr, value, line_index, diagnostics, &signal);
+            }
+        } else {
+            emit_undefined(attr, value, line_index, diagnostics, &signal);
+        }
+    }
+}
+
+fn emit_undefined(
+    attr: &crate::analysis::ts_util::AttrData,
+    value: &str,
+    line_index: &LineIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+    signal: &str,
+) {
+    if let (Some(value_start), Some(pos)) = (attr.value_start, value.find(&format!("${signal}"))) {
+        let start = value_start + pos;
+        let end = start + 1 + signal.len();
+        let range = byte_range_to_lsp_range(line_index, start, end);
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::HINT),
+            source: Some("datastar".to_string()),
+            message: format!("Undefined signal: '${signal}' is not defined in this document."),
+            ..Default::default()
+        });
     }
 }
 

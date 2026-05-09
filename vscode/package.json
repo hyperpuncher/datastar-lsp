@@ -1,0 +1,57 @@
+{
+	"name": "datastar-lsp",
+	"displayName": "Datastar LSP",
+	"description": "Language server for Datastar hypermedia framework - diagnostics, completions, hover, go-to-definition, references, rename",
+	"version": "0.1.0",
+	"publisher": "hyperpuncher",
+	"license": "MIT",
+	"repository": "https://github.com/hyperpuncher/datastar-lsp",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Programming Languages",
+		"Linters"
+	],
+	"activationEvents": [
+		"onLanguage:html",
+		"onLanguage:javascriptreact",
+		"onLanguage:typescriptreact",
+		"onLanguage:templ",
+		"onLanguage:heex",
+		"onLanguage:blade"
+	],
+	"main": "./extension.js",
+	"contributes": {
+		"configuration": {
+			"title": "Datastar LSP",
+			"properties": {
+				"datastar-lsp.binary": {
+					"type": "string",
+					"default": "",
+					"description": "Custom path to datastar-lsp binary. Leave empty to auto-download from GitHub releases."
+				},
+				"datastar-lsp.version": {
+					"type": "string",
+					"default": "latest",
+					"description": "Version of datastar-lsp to download (e.g. 'v0.7.0' or 'latest')."
+				},
+				"datastar-lsp.trace.server": {
+					"type": "string",
+					"default": "off",
+					"enum": ["off", "messages", "verbose"],
+					"description": "Trace level for LSP communication."
+				}
+			}
+		}
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.0"
+	},
+	"devDependencies": {
+		"@vscode/vsce": "^3.0.0"
+	},
+	"scripts": {
+		"package": "vsce package"
+	}
+}

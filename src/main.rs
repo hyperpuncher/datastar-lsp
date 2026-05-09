@@ -4,7 +4,9 @@ mod server;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     let (service, socket) = LspService::new(server::Backend::new);
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)

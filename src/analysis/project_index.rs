@@ -9,7 +9,7 @@ use crate::line_index::LineIndex;
 /// Stores raw text and line index per file.
 /// All tree-sitter parsing happens on-demand in handlers.
 pub struct ProjectIndex {
-    documents: Arc<DashMap<Url, (LineIndex, String)>>,
+    documents: Arc<DashMap<Url, LineIndex>>,
 }
 
 impl Default for ProjectIndex {
@@ -26,8 +26,8 @@ impl ProjectIndex {
     }
 
     pub fn index(&self, uri: &Url, text: String) {
-        let line_index = LineIndex::new(text.clone());
-        self.documents.insert(uri.clone(), (line_index, text));
+        let line_index = LineIndex::new(text);
+        self.documents.insert(uri.clone(), line_index);
     }
 
     pub fn remove(&self, uri: &Url) {
@@ -35,18 +35,22 @@ impl ProjectIndex {
     }
 
     pub fn get(&self, uri: &Url) -> Option<(LineIndex, String)> {
-        self.documents.get(uri).map(|r| r.clone())
+        self.documents.get(uri).map(|r| {
+            let li = r.clone();
+            let text = li.text().to_string();
+            (li, text)
+        })
     }
 
     pub fn text(&self, uri: &Url) -> Option<String> {
-        self.documents.get(uri).map(|r| r.1.clone())
+        self.documents.get(uri).map(|r| r.text().to_string())
     }
 
     pub fn line_index(&self, uri: &Url) -> Option<LineIndex> {
-        self.documents.get(uri).map(|r| r.0.clone())
+        self.documents.get(uri).map(|r| r.clone())
     }
 
-    pub fn iter(&self) -> dashmap::iter::Iter<'_, Url, (LineIndex, String)> {
+    pub fn iter(&self) -> dashmap::iter::Iter<'_, Url, LineIndex> {
         self.documents.iter()
     }
 }

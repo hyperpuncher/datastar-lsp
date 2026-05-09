@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS};
+use crate::analysis::signal_util;
 use crate::analysis::ts_util;
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
@@ -147,12 +147,7 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
         );
     }
 
-    let defined = attrs
-        .iter()
-        .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
-        .any(|a| a.key.as_deref() == Some(top));
-
-    if defined {
+    if signal_util::is_defined(top, attrs, None) {
         mk_hover(&format!("## `${name}`\n\nSignal defined in this document."))
     } else {
         mk_hover(&format!(

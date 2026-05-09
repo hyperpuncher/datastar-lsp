@@ -42,7 +42,8 @@ pub fn goto_definition(
     // Cross-file
     if let Some(index) = project_index {
         for entry in index.iter() {
-            let (cross_li, cross_text) = entry.value();
+            let cross_li = entry.value();
+            let cross_text = cross_li.text();
             for prefix in DEFINER_PREFIXES {
                 let pattern = format!("{prefix}{top}");
                 if let Some(pos) = cross_text.find(&pattern) {

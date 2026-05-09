@@ -2,7 +2,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position, Url,
 };
 
-use crate::analysis::signal_util::DEFINERS;
+use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
 use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
@@ -48,9 +48,14 @@ pub fn generate(
                     } else if before.ends_with('@') {
                         items.extend(complete_actions());
                     } else if let Some(pos) = before.rfind('$') {
-                        let after = &before[pos + 1..];
-                        if !after.contains(' ') && !after.contains('"') {
-                            items.extend(complete_signals(&attrs));
+                        let after_dollar = &before[pos + 1..];
+                        if !after_dollar.contains(' ') && !after_dollar.contains('"') {
+                            let prefix = if after_dollar.contains('.') {
+                                after_dollar.split('.').next_back()
+                            } else {
+                                Some(after_dollar)
+                            };
+                            items.extend(complete_signals_filtered(&attrs, prefix));
                         }
                     } else if let Some(pos) = before.rfind('@') {
                         let after = &before[pos + 1..];
@@ -145,12 +150,17 @@ fn complete_actions() -> Vec<CompletionItem> {
 }
 
 fn complete_signals(attrs: &[AttrData]) -> Vec<CompletionItem> {
+    complete_signals_filtered(attrs, None)
+}
+
+fn complete_signals_filtered(attrs: &[AttrData], prefix: Option<&str>) -> Vec<CompletionItem> {
     let mut seen = std::collections::BTreeSet::new();
     attrs
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .filter_map(|a| a.key.as_ref())
         .filter(|k| seen.insert(*k))
+        .filter(|n| prefix.is_none_or(|p| n.starts_with(p) && n.len() > p.len()))
         .map(|name| CompletionItem {
             label: format!("${name}"),
             kind: Some(CompletionItemKind::VARIABLE),
@@ -193,21 +203,16 @@ fn complete_modifiers(
         }
     }
 
-    for global in &["case", "delay", "viewtransition"] {
+    for global in GLOBAL_MODIFIERS {
         if used.contains(global) {
             continue;
         }
         if let Some(mod_def) = registry.get(global) {
-            let insert =
-                if mod_def.tags.is_empty() || mod_def.tags == crate::data::modifiers::ANY_TAG {
-                    if *global == "delay" {
-                        "__delay.500ms".to_string()
-                    } else {
-                        format!("__{global}")
-                    }
-                } else {
-                    format!("__{global}")
-                };
+            let insert = if *global == "delay" {
+                "__delay.500ms".to_string()
+            } else {
+                format!("__{global}")
+            };
             items.push(CompletionItem {
                 label: format!("__{global}"),
                 kind: Some(CompletionItemKind::ENUM_MEMBER),

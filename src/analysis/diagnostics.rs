@@ -180,40 +180,28 @@ fn check_attribute_validity(
 
     for (mod_key, _tags) in &attr.modifiers {
         if !modifier_registry.contains_key(mod_key.as_str()) {
-            if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
-                let start = attr.name_start + pos;
-                let end = start + 2 + mod_key.len();
-                let range = byte_range_to_lsp_range(line_index, start, end);
-                diagnostics.push(Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("datastar".to_string()),
-                    message: format!(
-                        "Unknown modifier: '__{mod_key}' is not a recognized modifier."
-                    ),
-                    ..Default::default()
-                });
-            }
+            push_modifier_diag(
+                diagnostics,
+                attr,
+                line_index,
+                mod_key,
+                &format!("Unknown modifier: '__{mod_key}' is not a recognized modifier."),
+            );
             continue;
         }
         if !def.modifier_keys.contains(&mod_key.as_str())
             && !signal_util::is_global_modifier(mod_key)
         {
-            if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
-                let start = attr.name_start + pos;
-                let end = start + 2 + mod_key.len();
-                let range = byte_range_to_lsp_range(line_index, start, end);
-                diagnostics.push(Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("datastar".to_string()),
-                    message: format!(
-                        "Modifier '__{mod_key}' is not valid for 'data-{}'.",
-                        attr.plugin_name
-                    ),
-                    ..Default::default()
-                });
-            }
+            push_modifier_diag(
+                diagnostics,
+                attr,
+                line_index,
+                mod_key,
+                &format!(
+                    "Modifier '__{mod_key}' is not valid for 'data-{}'.",
+                    attr.plugin_name
+                ),
+            );
         }
     }
 }
@@ -321,6 +309,27 @@ fn emit_undefined(
             severity: Some(DiagnosticSeverity::HINT),
             source: Some("datastar".to_string()),
             message: format!("Undefined signal: '${signal}' is not defined in this document."),
+            ..Default::default()
+        });
+    }
+}
+
+fn push_modifier_diag(
+    diagnostics: &mut Vec<Diagnostic>,
+    attr: &crate::analysis::ts_util::AttrData,
+    line_index: &LineIndex,
+    mod_key: &str,
+    message: &str,
+) {
+    if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
+        let start = attr.name_start + pos;
+        let end = start + 2 + mod_key.len();
+        let range = byte_range_to_lsp_range(line_index, start, end);
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("datastar".to_string()),
+            message: message.to_string(),
             ..Default::default()
         });
     }

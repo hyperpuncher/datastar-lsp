@@ -91,7 +91,8 @@ pub fn rename_signal(
             if &cross_uri == uri {
                 continue;
             }
-            let (cross_li, cross_text) = entry.value();
+            let cross_li = entry.value();
+            let cross_text = cross_li.text();
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
             let top_with_dollar = format!("${top}");
             for (pos, _) in cross_text.match_indices(&top_with_dollar) {

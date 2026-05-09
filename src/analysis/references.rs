@@ -79,7 +79,8 @@ pub fn find_references(
     // Cross-file
     if let Some(index) = project_index {
         for entry in index.iter() {
-            let (cross_li, cross_text) = entry.value();
+            let cross_li = entry.value();
+            let cross_text = cross_li.text();
             if entry.key() == uri {
                 continue;
             }

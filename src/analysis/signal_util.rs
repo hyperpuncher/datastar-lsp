@@ -17,6 +17,7 @@ pub const DEFINER_PREFIXES: &[&str] = &[
     "data-computed:",
     "data-ref:",
     "data-indicator:",
+    "data-match-media:",
 ];
 
 /// Return true if the top-level signal name is a builtin (evt, el, __*).
@@ -25,8 +26,11 @@ pub fn is_builtin_signal(top: &str) -> bool {
 }
 
 /// Global modifiers that work on any attribute.
+pub const GLOBAL_MODIFIERS: &[&str] = &["case", "delay", "viewtransition"];
+
+/// Check if a modifier key is global (works on any attribute).
 pub fn is_global_modifier(key: &str) -> bool {
-    matches!(key, "case" | "delay" | "viewtransition")
+    GLOBAL_MODIFIERS.contains(&key)
 }
 
 /// Scan a value string for `$signal` references, trimming `++`/`--`/`.` postfixes.
@@ -142,7 +146,8 @@ pub fn is_defined(
 /// Check if a signal name is found in cross-file index text.
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
     index.iter().any(|e| {
-        let (_li, t) = e.value();
+        let li = e.value();
+        let t = li.text();
         DEFINER_PREFIXES
             .iter()
             .any(|prefix| t.contains(&format!("{prefix}{name}")))

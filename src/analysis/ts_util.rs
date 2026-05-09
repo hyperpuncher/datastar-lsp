@@ -13,7 +13,6 @@ pub struct AttrData {
 }
 
 /// Pick the tree-sitter language for a file URI.
-/// HTML grammar works for most template languages; TypeScript for JSX/TSX.
 pub fn language_for(uri: &tower_lsp::lsp_types::Url) -> tree_sitter::Language {
     let path = uri.path().to_lowercase();
     if path.ends_with(".jsx") || path.ends_with(".tsx") {
@@ -23,7 +22,7 @@ pub fn language_for(uri: &tower_lsp::lsp_types::Url) -> tree_sitter::Language {
     }
 }
 
-/// Collect all `data-*` attributes from a tree-sitter HTML parse tree.
+/// Collect all `data-*` attributes from a tree-sitter parse tree.
 pub fn collect_from_tree(node: tree_sitter::Node, text: &str) -> Vec<AttrData> {
     let mut attrs = Vec::new();
     collect_recursive(node, text.as_bytes(), &mut attrs);
@@ -31,11 +30,14 @@ pub fn collect_from_tree(node: tree_sitter::Node, text: &str) -> Vec<AttrData> {
 }
 
 fn collect_recursive(node: tree_sitter::Node, src: &[u8], attrs: &mut Vec<AttrData>) {
-    if node.kind() == "attribute" {
-        if let Some(item) = extract_one(node, src) {
-            attrs.push(item);
-            return;
+    match node.kind() {
+        "attribute" | "jsx_attribute" => {
+            if let Some(item) = extract_attr(node, src) {
+                attrs.push(item);
+                return;
+            }
         }
+        _ => {}
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
@@ -44,7 +46,7 @@ fn collect_recursive(node: tree_sitter::Node, src: &[u8], attrs: &mut Vec<AttrDa
     }
 }
 
-fn extract_one(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
+fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
     let mut name: Option<String> = None;
     let mut name_start = 0usize;
     let mut value: Option<String> = None;
@@ -53,13 +55,39 @@ fn extract_one(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
     for i in 0..node.child_count() {
         let child = node.child(i as u32)?;
         match child.kind() {
-            "attribute_name" => {
+            // Attribute name — HTML uses "attribute_name", JSX uses these two
+            "attribute_name" | "property_identifier" | "jsx_namespace_name" => {
                 name_start = child.start_byte();
                 name = child.utf8_text(src).ok().map(String::from);
             }
+            // Simple quoted value — HTML
             "attribute_value" | "quoted_attribute_value" => {
                 let raw = child.utf8_text(src).ok()?;
-                value = Some(raw.trim_matches(&['"', '\''] as &[_]).to_string());
+                value = Some(raw.trim_matches(['"', '\''].as_ref()).to_string());
+                value_start = Some(child.start_byte());
+            }
+            // JSX string value (includes quotes, extract inner fragment)
+            "string" => {
+                let raw = child.utf8_text(src).ok()?;
+                // Look for inner string_fragment for exact byte position
+                for j in 0..child.child_count() {
+                    if let Some(frag) = child.child(j as u32) {
+                        if frag.kind() == "string_fragment" {
+                            value = frag.utf8_text(src).ok().map(String::from);
+                            value_start = Some(frag.start_byte());
+                            break;
+                        }
+                    }
+                }
+                // Fallback: strip quotes manually
+                if value.is_none() {
+                    value = Some(raw.trim_matches(['"', '\''].as_ref()).to_string());
+                    value_start = Some(child.start_byte());
+                }
+            }
+            // JSX expression (template literal or JS): `{...}`
+            "jsx_expression" => {
+                value = child.utf8_text(src).ok().map(String::from);
                 value_start = Some(child.start_byte());
             }
             _ => {}
@@ -81,4 +109,53 @@ fn extract_one(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
         value_start,
         modifiers: parsed.modifiers,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_collect_html() {
+        let text = r#"<div data-show="true"><button data-on:click="$counter++">+</button></div>"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_html::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let attrs = collect_from_tree(tree.root_node(), text);
+        assert_eq!(attrs.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_tsx() {
+        let text = r#"export function Test() { return <div data-show="true"><button data-on:click="$counter++">+</button></div> }"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let attrs = collect_from_tree(tree.root_node(), text);
+        assert!(attrs.len() >= 2, "got {}", attrs.len());
+    }
+
+    #[test]
+    fn test_collect_tsx_template_literal() {
+        let text = r#"export function T() { return <button data-on:click={`@get('/api?p=${n}`)}>Go</button> }"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let attrs = collect_from_tree(tree.root_node(), text);
+        assert!(!attrs.is_empty(), "got {}", attrs.len());
+    }
+
+    #[test]
+    fn test_language_for() {
+        let html_uri = tower_lsp::lsp_types::Url::parse("file:///tmp/test.html").unwrap();
+        let tsx_uri = tower_lsp::lsp_types::Url::parse("file:///tmp/test.tsx").unwrap();
+        assert!(language_for(&html_uri) == tree_sitter_html::LANGUAGE.into());
+        assert!(language_for(&tsx_uri) == tree_sitter_typescript::LANGUAGE_TSX.into());
+    }
 }

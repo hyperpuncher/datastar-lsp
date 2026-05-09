@@ -6,4 +6,4 @@ pub mod hover;
 pub mod project_index;
 pub mod references;
 pub mod rename;
-pub mod signals;
+pub mod ts_util;

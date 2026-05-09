@@ -1,48 +1,53 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
-use crate::analysis::signals::{self, SignalAnalysis};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
-use crate::parser::html::DataAttribute;
 
-/// Generate hover information for a position in the document.
-pub fn generate(
-    line_index: &LineIndex,
-    position: Position,
-    attrs: &[DataAttribute],
-    analysis: &SignalAnalysis,
-) -> Option<Hover> {
+pub fn generate(line_index: &LineIndex, text: &str, position: Position) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    for attr in attrs {
-        if offset >= attr.name_start && offset <= attr.name_start + attr.raw_name.len() {
-            return hover_attribute(attr);
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_html::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(text, None)?;
+    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
+
+    for attr in &attrs {
+        if offset >= attr.name_start && offset <= attr.name_start + attr.name_len {
+            return hover_attribute_node(attr);
         }
-        if let Some(rel) = attr.value_rel_offset(offset) {
-            return hover_value(attr, rel, analysis);
+        if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
+            let value_end = value_start + value.len() + 2;
+            if offset >= value_start && offset <= value_end {
+                let rel = offset.saturating_sub(value_start + 1);
+                if rel < value.len() {
+                    return hover_value_text(value, rel, &attrs);
+                }
+            }
         }
     }
 
     None
 }
 
-fn hover_attribute(attr: &DataAttribute) -> Option<Hover> {
+fn hover_attribute_node(attr: &crate::analysis::ts_util::AttrData) -> Option<Hover> {
     let registry = attributes::all();
     let def = registry.get(attr.plugin_name.as_str())?;
 
     let mut content = format!("## `data-{}`\n\n{}", attr.plugin_name, def.description);
 
     if let Some(key) = &attr.key {
-        content.push_str(&format!("\n\n**Key:** `{}`", key));
+        content.push_str(&format!("\n\n**Key:** `{key}`"));
     }
 
     if !attr.modifiers.is_empty() {
         content.push_str("\n\n**Modifiers:**");
         for (mod_key, tags) in &attr.modifiers {
             if tags.is_empty() {
-                content.push_str(&format!("\n- `__{}`", mod_key));
+                content.push_str(&format!("\n- `__{mod_key}`"));
             } else {
-                content.push_str(&format!("\n- `__{}.{}`", mod_key, tags.join(".")));
+                content.push_str(&format!("\n- `__{mod_key}.{}`", tags.join(".")));
             }
         }
     }
@@ -60,8 +65,7 @@ fn hover_attribute(attr: &DataAttribute) -> Option<Hover> {
         attributes::Requirement::Denied => "not allowed",
     };
     content.push_str(&format!(
-        "\n\n**Key:** {} | **Value:** {}",
-        key_info, value_info
+        "\n\n**Key:** {key_info} | **Value:** {value_info}"
     ));
 
     if def.pro {
@@ -79,212 +83,189 @@ fn hover_attribute(attr: &DataAttribute) -> Option<Hover> {
     })
 }
 
-fn hover_value(
-    attr: &DataAttribute,
-    value_offset: usize,
-    analysis: &SignalAnalysis,
+fn hover_value_text(
+    value: &str,
+    rel: usize,
+    attrs: &[crate::analysis::ts_util::AttrData],
 ) -> Option<Hover> {
-    let value = attr.value.as_ref()?;
     let bytes = value.as_bytes();
-
-    if value_offset < bytes.len() && bytes[value_offset] == b'$' {
-        let (name, _) = signals::read_signal_token(bytes, value_offset + 1);
-        if !name.is_empty() {
-            return hover_signal_name(name, analysis);
-        }
+    if rel >= bytes.len() {
         return None;
     }
 
-    if value_offset < bytes.len() && bytes[value_offset] == b'@' {
-        return hover_action(value, value_offset);
+    if bytes[rel] == b'$' {
+        if let Some(name) = read_signal_name(&value[rel + 1..]) {
+            return hover_signal(&name, attrs);
+        }
     }
 
-    // Cursor inside an @action name — scan backward for @
-    if value_offset < bytes.len()
-        && (bytes[value_offset].is_ascii_alphanumeric() || bytes[value_offset] == b'_')
-    {
-        let mut start = value_offset;
-        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
-            start -= 1;
+    if bytes[rel] == b'@' {
+        return hover_action_name(value, rel);
+    }
+
+    if bytes[rel].is_ascii_alphanumeric() || bytes[rel] == b'_' {
+        let mut start = rel;
+        while start > 0 {
+            let c = bytes[start - 1];
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
+                start -= 1;
+            } else {
+                break;
+            }
         }
         if start > 0 && bytes[start - 1] == b'@' {
-            return hover_action(value, start - 1);
+            return hover_action_name(value, start - 1);
         }
-    }
-
-    if let Some(sig_content) = signals::find_signal_name_at_offset(bytes, value_offset) {
-        return hover_signal_name(&sig_content, analysis);
+        if start > 0 && bytes[start - 1] == b'$' {
+            let name = &value[start..];
+            let name = name
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+                .next()
+                .unwrap_or("");
+            if !name.is_empty() {
+                return hover_signal(name, attrs);
+            }
+        }
     }
 
     None
 }
 
-fn hover_signal_name(name: &str, analysis: &SignalAnalysis) -> Option<Hover> {
-    let top_name = name.split('.').next().unwrap_or("");
+fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Option<Hover> {
+    let top = name.split('.').next().unwrap_or("");
 
-    if let Some(defs) = analysis.definitions.get(top_name) {
-        let def_by = defs
-            .first()
-            .map(|d| d.defined_by.as_str())
-            .unwrap_or("unknown");
-
-        let content = format!("## `${{{name}}}`\n\nSignal defined via `data-{def_by}`.");
-
-        if defs.len() > 1 {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!(
-                        "{}\n\n> Defined {} times in this document.",
-                        content,
-                        defs.len()
-                    ),
-                }),
-                range: None,
-            });
-        }
-
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: content,
-            }),
-            range: None,
-        });
+    if top == "evt" {
+        return mk_hover(
+            "## `$evt`\n\nBuilt-in signal: the current event object.\n\nAvailable in `data-on:*` expressions.",
+        );
+    }
+    if top == "el" {
+        return mk_hover(
+            "## `$el`\n\nBuilt-in signal: the element on which the attribute resides.",
+        );
     }
 
-    if top_name == "evt" {
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: "## `$evt`\n\nBuilt-in signal: the current event object.\n\nAvailable in `data-on:*` expressions."
-                    .to_string(),
-            }),
-            range: None,
-        });
-    }
-    if top_name == "el" {
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: "## `$el`\n\nBuilt-in signal: the element on which the attribute resides."
-                    .to_string(),
-            }),
-            range: None,
-        });
-    }
+    let definers: std::collections::BTreeSet<&str> = [
+        "signals",
+        "bind",
+        "computed",
+        "ref",
+        "indicator",
+        "match-media",
+    ]
+    .iter()
+    .copied()
+    .collect();
+    let defined = attrs
+        .iter()
+        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .any(|a| a.key.as_deref() == Some(top));
 
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!(
-                "## `${{{n}}}`\n\n⚠️ **Undefined signal**: `${{{n}}}` is not defined in this document.",
-                n = name
-            ),
-        }),
-        range: None,
-    })
+    if defined {
+        mk_hover(&format!("## `${name}`\n\nSignal defined in this document."))
+    } else {
+        mk_hover(&format!(
+            "## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
+            name = name
+        ))
+    }
 }
 
-fn hover_action(value: &str, offset: usize) -> Option<Hover> {
+fn hover_action_name(value: &str, offset: usize) -> Option<Hover> {
     let bytes = value.as_bytes();
     let mut end = offset + 1;
     while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
         end += 1;
     }
-    let action_name = std::str::from_utf8(&bytes[offset + 1..end]).unwrap_or("");
+    let name = std::str::from_utf8(&bytes[offset + 1..end]).unwrap_or("");
     let registry = actions::all();
 
-    if let Some(def) = registry.get(action_name) {
+    if let Some(def) = registry.get(name) {
         let params = def.params.join(", ");
-        let mut content = format!(
-            "## `@{}`\n\n{}\n\n**Signature:** `@{}`({})",
-            action_name, def.description, action_name, params
+        let content = format!(
+            "## `@{name}`\n\n{}\n\n**Signature:** `@{name}`({params})\n\n[Documentation]({})",
+            def.description, def.doc_url
         );
-
-        if def.pro {
-            content.push_str("\n\n> ⚠️ Datastar Pro action");
-        }
-
-        content.push_str(&format!("\n\n[Documentation]({})", def.doc_url));
-
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: content,
-            }),
-            range: None,
-        })
+        mk_hover(&content)
     } else {
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!(
-                    "## `@{}`\n\n⚠️ **Unknown action**: `@{}` is not a recognized Datastar action.",
-                    action_name, action_name
-                ),
-            }),
-            range: None,
-        })
+        mk_hover(&format!(
+            "## `@{name}`\n\n⚠️ **Unknown action**: `@{name}` is not a recognized Datastar action."
+        ))
     }
+}
+
+fn read_signal_name(after_dollar: &str) -> Option<String> {
+    let end = after_dollar
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .unwrap_or(after_dollar.len());
+    let raw = &after_dollar[..end];
+    let trimmed = raw
+        .trim_end_matches("++")
+        .trim_end_matches("--")
+        .trim_end_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn mk_hover(markdown: &str) -> Option<Hover> {
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: markdown.to_string(),
+        }),
+        range: None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn hover_for(html: &str, cursor: &str) -> Option<Hover> {
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let offset = html.find(cursor).unwrap();
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let (line, col) = line_index.byte_to_position(offset);
-        let pos = Position {
-            line,
-            character: col,
-        };
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        generate(&line_index, pos, &parsed.1, &analysis)
+    fn hover_at(html: &str, cursor_pattern: &str) -> Option<Hover> {
+        let offset = html.find(cursor_pattern).unwrap();
+        let li = LineIndex::new(html.to_string());
+        let (line, col) = li.byte_to_position(offset);
+        generate(
+            &li,
+            html,
+            Position {
+                line,
+                character: col,
+            },
+        )
     }
 
     #[test]
     fn test_hover_on_signal() {
         let html = r#"<div data-signals:foo="1"><span data-text="$foo"></span></div>"#;
-        let hover = hover_for(html, "$foo");
-        assert!(hover.is_some());
-        let h = hover.unwrap();
-        let contents = match &h.contents {
+        let h = hover_at(html, "$foo").expect("hover for $foo");
+        let v = match &h.contents {
             HoverContents::Markup(m) => &m.value,
             _ => panic!("expected markup"),
         };
-        assert!(
-            contents.contains("foo"),
-            "hover should mention foo: {}",
-            contents
-        );
+        assert!(v.contains("foo"), "hover: {v}");
     }
 
     #[test]
     fn test_hover_on_attribute() {
         let html = r#"<div data-show="true"></div>"#;
-        // Character 7 is inside "data-sh"
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let pos = Position {
-            line: 0,
-            character: 7,
-        };
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        let hover = generate(&line_index, pos, &parsed.1, &analysis);
-        assert!(hover.is_some(), "expected hover at char 7");
-        let h = hover.unwrap();
-        let contents = match &h.contents {
+        let li = LineIndex::new(html.to_string());
+        let h = generate(
+            &li,
+            html,
+            Position {
+                line: 0,
+                character: 7,
+            },
+        )
+        .expect("hover at char 7");
+        let v = match &h.contents {
             HoverContents::Markup(m) => &m.value,
             _ => panic!("expected markup"),
         };
-        assert!(
-            contents.contains("data-show"),
-            "hover should mention data-show: {}",
-            contents
-        );
+        assert!(v.contains("data-show"), "hover: {v}");
     }
 }

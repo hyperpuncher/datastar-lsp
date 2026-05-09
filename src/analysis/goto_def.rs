@@ -1,90 +1,102 @@
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
 
-use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::{self, SignalAnalysis};
 use crate::line_index::LineIndex;
-use crate::parser::html::DataAttribute;
 
-/// Find the definition location of a signal or action at the given position.
-/// Searches local document first, then cross-file index.
+/// Find the definition of a signal or action at the given position.
 pub fn goto_definition(
     line_index: &LineIndex,
+    text: &str,
     position: Position,
     uri: &Url,
-    attrs: &[DataAttribute],
-    analysis: &SignalAnalysis,
-    project_index: Option<&ProjectIndex>,
+    project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) -> Option<GotoDefinitionResponse> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    // Check if cursor is inside a signal reference in an attribute value
-    for attr in attrs {
-        let rel_offset = match attr.value_rel_offset(offset) {
-            Some(r) => r,
-            None => continue,
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_html::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(text, None)?;
+    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
+
+    for attr in &attrs {
+        let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
+            continue;
         };
-
-        let bytes = attr.value.as_ref().map(|v| v.as_bytes()).unwrap_or(b"");
-
-        if let Some(signal_name) = signals::find_signal_name_at_offset(bytes, rel_offset) {
-            let top_name = signal_name.split('.').next().unwrap_or("");
-            return find_signal_definition(line_index, top_name, uri, analysis, project_index);
+        let value_end = value_start + value.len() + 2;
+        if offset < value_start || offset > value_end {
+            continue;
         }
-    }
+        let rel = offset.saturating_sub(value_start + 1);
+        if rel >= value.len() {
+            continue;
+        }
 
-    None
-}
+        let signal_name = signal_name_at_offset(value, rel)?;
+        let top = signal_name.split('.').next().unwrap_or("");
 
-/// Find the definition of a top-level signal name in the document.
-/// Falls back to cross-file project index if not found locally.
-fn find_signal_definition(
-    line_index: &LineIndex,
-    top_name: &str,
-    uri: &Url,
-    analysis: &SignalAnalysis,
-    project_index: Option<&ProjectIndex>,
-) -> Option<GotoDefinitionResponse> {
-    // Try local first
-    if let Some(defs) = analysis.definitions.get(top_name) {
-        let def = defs.first()?;
-        let (line, col) = line_index.byte_to_position(def.byte_offset);
-        let pos = tower_lsp::lsp_types::Position {
-            line,
-            character: col,
-        };
-        return Some(GotoDefinitionResponse::Scalar(Location {
-            uri: uri.clone(),
-            range: Range {
-                start: pos,
-                end: Position {
-                    line: pos.line,
-                    character: pos.character + def.name.len() as u32 + 1,
-                },
-            },
-        }));
-    }
+        let definers: std::collections::BTreeSet<&str> = [
+            "signals",
+            "bind",
+            "computed",
+            "ref",
+            "indicator",
+            "match-media",
+        ]
+        .iter()
+        .copied()
+        .collect();
 
-    // Fall back to cross-file index
-    if let Some(index) = project_index {
-        let cross_defs = index.find_definitions(top_name, Some(uri));
-        if !cross_defs.is_empty() {
-            let (cross_uri, byte_offset) = &cross_defs[0];
-            if let Some((line_index, _, _)) = index.get(cross_uri) {
-                let (line, col) = line_index.byte_to_position(*byte_offset);
-                let pos = tower_lsp::lsp_types::Position {
-                    line,
-                    character: col,
-                };
+        for def_attr in &attrs {
+            if definers.contains(def_attr.plugin_name.as_str())
+                && def_attr.key.as_deref() == Some(top)
+            {
+                let pos = line_index.byte_to_position(def_attr.name_start);
                 return Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: cross_uri.clone(),
+                    uri: uri.clone(),
                     range: Range {
-                        start: pos,
+                        start: Position {
+                            line: pos.0,
+                            character: pos.1,
+                        },
                         end: Position {
-                            line: pos.line,
-                            character: pos.character + top_name.len() as u32 + 1,
+                            line: pos.0,
+                            character: pos.1 + top.len() as u32,
                         },
                     },
                 }));
+            }
+        }
+
+        // Cross-file
+        if let Some(index) = project_index {
+            for entry in index.iter() {
+                let (cross_li, cross_text) = entry.value();
+                for prefix in &[
+                    "data-signals:",
+                    "data-bind:",
+                    "data-computed:",
+                    "data-ref:",
+                    "data-indicator:",
+                ] {
+                    let pattern = format!("{prefix}{top}");
+                    if let Some(pos) = cross_text.find(&pattern) {
+                        let (line, col) = cross_li.byte_to_position(pos + prefix.len());
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: entry.key().clone(),
+                            range: Range {
+                                start: Position {
+                                    line,
+                                    character: col,
+                                },
+                                end: Position {
+                                    line,
+                                    character: col + top.len() as u32,
+                                },
+                            },
+                        }));
+                    }
+                }
             }
         }
     }
@@ -92,45 +104,87 @@ fn find_signal_definition(
     None
 }
 
+fn signal_name_at_offset(value: &str, rel: usize) -> Option<String> {
+    let bytes = value.as_bytes();
+    if rel >= bytes.len() {
+        return None;
+    }
+    if bytes[rel] == b'$' {
+        return read_name(&value[rel + 1..]);
+    }
+    if bytes[rel].is_ascii_alphanumeric()
+        || bytes[rel] == b'_'
+        || bytes[rel] == b'-'
+        || bytes[rel] == b'.'
+    {
+        let mut start = rel;
+        while start > 0 {
+            let c = bytes[start - 1];
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        if start > 0 && bytes[start - 1] == b'$' {
+            return read_name(&value[start..]);
+        }
+    }
+    None
+}
+
+fn read_name(s: &str) -> Option<String> {
+    let end = s
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .unwrap_or(s.len());
+    let raw = &s[..end];
+    let trimmed = raw
+        .trim_end_matches("++")
+        .trim_end_matches("--")
+        .trim_end_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn gd_for(html: &str, cursor: &str) -> Option<GotoDefinitionResponse> {
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
         let uri = Url::parse("file:///test.html").unwrap();
         let offset = html.find(cursor).unwrap();
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let (line, col) = line_index.byte_to_position(offset);
-        let pos = Position {
-            line,
-            character: col + 1,
-        }; // inside signal name
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        goto_definition(&line_index, pos, &uri, &parsed.1, &analysis, None)
+        let li = LineIndex::new(html.to_string());
+        let (line, col) = li.byte_to_position(offset);
+        goto_definition(
+            &li,
+            html,
+            Position {
+                line,
+                character: col + 1,
+            },
+            &uri,
+            None,
+        )
     }
 
     #[test]
     fn test_goto_signal_definition() {
         let html = r#"<div data-signals:foo="1"><span data-text="$foo"></span></div>"#;
-        let result = gd_for(html, "$foo");
-        assert!(result.is_some(), "should find definition for $foo");
+        assert!(gd_for(html, "$foo").is_some());
     }
 
     #[test]
     fn test_goto_undefined_signal() {
         let html = r#"<div data-text="$nonexistent"></div>"#;
-        let result = gd_for(html, "$nonexistent");
-        assert!(
-            result.is_none(),
-            "undefined signal should have no definition"
-        );
+        assert!(gd_for(html, "$nonexistent").is_none());
     }
 
     #[test]
     fn test_goto_bind_definition() {
         let html = r#"<input data-bind:count /><button data-on:click="$count++">+</button>"#;
-        let result = gd_for(html, "$count");
-        assert!(result.is_some(), "should find definition for $count");
+        assert!(gd_for(html, "$count").is_some());
     }
 }

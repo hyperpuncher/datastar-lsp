@@ -1,27 +1,53 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
-use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::SignalAnalysis;
 use crate::data::{actions, attributes, modifiers};
 use crate::line_index::LineIndex;
-use crate::parser::html::DataAttribute;
+use crate::util::byte_range_to_lsp_range;
 
-/// Generate diagnostics for a document. Optionally checks cross-file
-/// index to suppress "undefined signal" hints.
+/// Generate diagnostics by parsing the document with tree-sitter and walking data-* attrs.
 pub fn generate(
     line_index: &LineIndex,
-    data_attrs: &[DataAttribute],
-    signal_analysis: &SignalAnalysis,
-    project_index: Option<&ProjectIndex>,
+    text: &str,
+    project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_html::LANGUAGE.into())
+        .is_err()
+    {
+        return diagnostics;
+    }
+    let tree = match parser.parse(text, None) {
+        Some(t) => t,
+        None => return diagnostics,
+    };
+
+    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
     let attr_registry = attributes::all();
     let action_registry = actions::all();
     let modifier_registry = modifiers::all();
 
-    // Per-attribute diagnostics
-    for attr in data_attrs {
+    let definers: std::collections::BTreeSet<&str> = [
+        "signals",
+        "bind",
+        "computed",
+        "ref",
+        "indicator",
+        "match-media",
+    ]
+    .iter()
+    .copied()
+    .collect();
+    let defined_signals: std::collections::BTreeSet<String> = attrs
+        .iter()
+        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .filter_map(|a| a.key.clone())
+        .collect();
+
+    for attr in &attrs {
         check_attribute_validity(
             attr,
             &attr_registry,
@@ -29,17 +55,98 @@ pub fn generate(
             line_index,
             &mut diagnostics,
         );
-        check_expression_actions(attr, &action_registry, line_index, &mut diagnostics);
+        check_value_actions(attr, &action_registry, line_index, &mut diagnostics);
+        check_value_signals(attr, line_index, &mut diagnostics, &defined_signals);
     }
 
-    // Signal reference diagnostics
-    check_undefined_signals(signal_analysis, line_index, &mut diagnostics, project_index);
+    // Cross-file signal check
+    if let Some(index) = project_index {
+        for attr in &attrs {
+            if let Some(value) = &attr.value {
+                for signal in scan_signals(value) {
+                    let top = signal.split('.').next().unwrap_or("");
+                    if top == "evt" || top == "el" || top.starts_with("__") {
+                        continue;
+                    }
+                    if defined_signals.contains(top) {
+                        continue;
+                    }
+                    if !index_find_def(index, top) {
+                        if let Some(value_start) = attr.value_start {
+                            if let Some(pos) = value.find(&format!("${signal}")) {
+                                let start = value_start + 1 + pos;
+                                let end = start + 1 + signal.len();
+                                let range = byte_range_to_lsp_range(line_index, start, end);
+                                diagnostics.push(Diagnostic {
+                                    range,
+                                    severity: Some(DiagnosticSeverity::HINT),
+                                    source: Some("datastar".to_string()),
+                                    message: format!(
+                                        "Undefined signal: '${signal}' is not defined in any open file."
+                                    ),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     diagnostics
 }
 
+fn scan_signals(value: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next.is_ascii_alphabetic() || next == b'_' {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_alphanumeric()
+                        || bytes[j] == b'_'
+                        || bytes[j] == b'-'
+                        || bytes[j] == b'.')
+                {
+                    j += 1;
+                }
+                if j > start {
+                    let raw = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
+                    let trimmed = raw
+                        .trim_end_matches("++")
+                        .trim_end_matches("--")
+                        .trim_end_matches('.');
+                    if !trimmed.is_empty() {
+                        results.push(trimmed.to_string());
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    results
+}
+
+fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
+    index.iter().any(|e| {
+        let (_li, t) = e.value();
+        t.contains(&format!("data-signals:{name}"))
+            || t.contains(&format!("data-bind:{name}"))
+            || t.contains(&format!("data-computed:{name}"))
+            || t.contains(&format!("data-ref:{name}"))
+            || t.contains(&format!("data-indicator:{name}"))
+    })
+}
+
 fn check_attribute_validity(
-    attr: &DataAttribute,
+    attr: &crate::analysis::ts_util::AttrData,
     registry: &std::collections::BTreeMap<&str, attributes::AttributeDef>,
     modifier_registry: &std::collections::BTreeMap<&str, modifiers::ModifierDef>,
     line_index: &LineIndex,
@@ -48,11 +155,10 @@ fn check_attribute_validity(
     let def = match registry.get(attr.plugin_name.as_str()) {
         Some(d) => d,
         None => {
-            // Unknown plugin name
-            let range = crate::util::byte_range_to_lsp_range(
+            let range = byte_range_to_lsp_range(
                 line_index,
                 attr.name_start,
-                attr.name_start + attr.raw_name.len(),
+                attr.name_start + attr.name_len,
             );
             diagnostics.push(Diagnostic {
                 range,
@@ -68,31 +174,27 @@ fn check_attribute_validity(
         }
     };
 
-    // Check key requirement
     match (def.key_req, &attr.key) {
         (attributes::Requirement::Must, None) => {
-            let range = crate::util::byte_range_to_lsp_range(
+            let range = byte_range_to_lsp_range(
                 line_index,
                 attr.name_start,
-                attr.name_start + attr.raw_name.len(),
+                attr.name_start + attr.name_len,
             );
             diagnostics.push(Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("datastar".to_string()),
-                message: format!(
-                    "Missing key: 'data-{}' requires a key (e.g. 'data-{}:key').",
-                    attr.plugin_name, attr.plugin_name
-                ),
+                message: format!("Missing key: 'data-{}' requires a key.", attr.plugin_name),
                 ..Default::default()
             });
         }
         (attributes::Requirement::Denied, Some(key)) => {
-            let key_pos = attr.raw_name.find(':').unwrap_or(0);
-            let range = crate::util::byte_range_to_lsp_range(
+            let pos = attr.raw_name.find(':').unwrap_or(0);
+            let range = byte_range_to_lsp_range(
                 line_index,
-                attr.name_start + key_pos,
-                attr.name_start + key_pos + 1 + key.len(),
+                attr.name_start + pos,
+                attr.name_start + pos + 1 + key.len(),
             );
             diagnostics.push(Diagnostic {
                 range,
@@ -106,10 +208,10 @@ fn check_attribute_validity(
             });
         }
         (attributes::Requirement::Exclusive, Some(_)) if attr.value.is_some() => {
-            let range = crate::util::byte_range_to_lsp_range(
+            let range = byte_range_to_lsp_range(
                 line_index,
                 attr.name_start,
-                attr.name_start + attr.raw_name.len(),
+                attr.name_start + attr.name_len,
             );
             diagnostics.push(Diagnostic {
                 range,
@@ -125,13 +227,12 @@ fn check_attribute_validity(
         _ => {}
     }
 
-    // Check value requirement
     match (def.value_req, &attr.value) {
         (attributes::Requirement::Must, None) => {
-            let range = crate::util::byte_range_to_lsp_range(
+            let range = byte_range_to_lsp_range(
                 line_index,
                 attr.name_start,
-                attr.name_start + attr.raw_name.len(),
+                attr.name_start + attr.name_len,
             );
             diagnostics.push(Diagnostic {
                 range,
@@ -145,13 +246,12 @@ fn check_attribute_validity(
             });
         }
         (attributes::Requirement::Denied, Some(_)) => {
-            let range = crate::util::byte_range_to_lsp_range(
-                line_index,
-                attr.value_start.unwrap_or(attr.name_start),
-                attr.value_start
-                    .map(|s| s + attr.value.as_ref().map(|v| v.len() + 2).unwrap_or(0))
-                    .unwrap_or(attr.name_start + attr.raw_name.len()),
-            );
+            let start = attr.value_start.unwrap_or(attr.name_start);
+            let end = attr
+                .value_start
+                .map(|s| s + attr.value.as_ref().map(|v| v.len() + 2).unwrap_or(0))
+                .unwrap_or(attr.name_start + attr.name_len);
+            let range = byte_range_to_lsp_range(line_index, start, end);
             diagnostics.push(Diagnostic {
                 range,
                 severity: Some(DiagnosticSeverity::WARNING),
@@ -166,44 +266,36 @@ fn check_attribute_validity(
         _ => {}
     }
 
-    // Check modifier keys against known modifiers for this attribute
     for (mod_key, _tags) in &attr.modifiers {
-        // Validate the modifier key is known
         if !modifier_registry.contains_key(mod_key.as_str()) {
-            let mod_pos = attr.raw_name.find(&format!("__{}", mod_key));
-            if let Some(pos) = mod_pos {
+            if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
+                let range = byte_range_to_lsp_range(line_index, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
                     source: Some("datastar".to_string()),
                     message: format!(
-                        "Unknown modifier: '__{}' is not a recognized modifier.",
-                        mod_key
+                        "Unknown modifier: '__{mod_key}' is not a recognized modifier."
                     ),
                     ..Default::default()
                 });
             }
-        }
-        // Check if this modifier is valid for this specific attribute
-        if !modifier_registry.contains_key(mod_key.as_str()) {
             continue;
         }
         if !def.modifier_keys.contains(&mod_key.as_str()) && !is_global_modifier(mod_key) {
-            let mod_pos = attr.raw_name.find(&format!("__{}", mod_key));
-            if let Some(pos) = mod_pos {
+            if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
                 let start = attr.name_start + pos;
                 let end = start + 2 + mod_key.len();
-                let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
+                let range = byte_range_to_lsp_range(line_index, start, end);
                 diagnostics.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::WARNING),
                     source: Some("datastar".to_string()),
                     message: format!(
-                        "Modifier '__{}' is not valid for 'data-{}'.",
-                        mod_key, attr.plugin_name
+                        "Modifier '__{mod_key}' is not valid for 'data-{}'.",
+                        attr.plugin_name
                     ),
                     ..Default::default()
                 });
@@ -212,14 +304,13 @@ fn check_attribute_validity(
     }
 }
 
-/// Check if a modifier is valid for all attributes (global modifiers).
 fn is_global_modifier(key: &str) -> bool {
     matches!(key, "case" | "delay" | "viewtransition")
 }
 
-fn check_expression_actions(
-    attr: &DataAttribute,
-    action_registry: &std::collections::BTreeMap<&str, actions::ActionDef>,
+fn check_value_actions(
+    attr: &crate::analysis::ts_util::AttrData,
+    registry: &std::collections::BTreeMap<&str, actions::ActionDef>,
     line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -227,8 +318,6 @@ fn check_expression_actions(
         Some(v) => v,
         None => return,
     };
-
-    // Simple scan for @actionName patterns
     let bytes = value.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -239,32 +328,24 @@ fn check_expression_actions(
                 while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                     j += 1;
                 }
-                let action_name = std::str::from_utf8(&bytes[i + 1..j]).unwrap_or("");
-                if !action_registry.contains_key(action_name) {
-                    // Skip if it's a local action (custom component actions)
-                    if !action_name.is_empty()
-                        && action_name
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_uppercase())
-                    {
-                        // Could be a variable, skip
-                    } else if !action_name.is_empty() {
-                        let value_start = attr.value_start.unwrap_or(0);
-                        let start = value_start + 1 + i; // +1 for opening quote
-                        let end = start + (j - i);
-                        let range = crate::util::byte_range_to_lsp_range(line_index, start, end);
-                        diagnostics.push(Diagnostic {
-                            range,
-                            severity: Some(DiagnosticSeverity::WARNING),
-                            source: Some("datastar".to_string()),
-                            message: format!(
-                                "Unknown action: '@{}' is not a recognized Datastar action.",
-                                action_name
-                            ),
-                            ..Default::default()
-                        });
-                    }
+                let name = std::str::from_utf8(&bytes[i + 1..j]).unwrap_or("");
+                if !name.is_empty()
+                    && !registry.contains_key(name)
+                    && !name.starts_with(|c: char| c.is_ascii_uppercase())
+                {
+                    let value_start = attr.value_start.unwrap_or(0);
+                    let start = value_start + 1 + i;
+                    let end = start + (j - i);
+                    let range = byte_range_to_lsp_range(line_index, start, end);
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("datastar".to_string()),
+                        message: format!(
+                            "Unknown action: '@{name}' is not a recognized Datastar action."
+                        ),
+                        ..Default::default()
+                    });
                 }
                 i = j;
                 continue;
@@ -274,50 +355,39 @@ fn check_expression_actions(
     }
 }
 
-fn check_undefined_signals(
-    analysis: &crate::analysis::signals::SignalAnalysis,
+fn check_value_signals(
+    attr: &crate::analysis::ts_util::AttrData,
     line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
-    project_index: Option<&ProjectIndex>,
+    defined: &std::collections::BTreeSet<String>,
 ) {
-    for ref_ in &analysis.references {
-        let top_name = ref_.name.split('.').next().unwrap_or("");
-        // Skip $evt, $el — built-in
-        if top_name == "evt" || top_name == "el" {
+    let value = match &attr.value {
+        Some(v) => v,
+        None => return,
+    };
+    for signal in scan_signals(value) {
+        let top = signal.split('.').next().unwrap_or("");
+        if top == "evt" || top == "el" || top.starts_with("__") {
             continue;
         }
-        // Skip double-underscore signals (local component signals)
-        if top_name.starts_with("__") {
-            continue;
-        }
-
-        // Skip if defined locally
-        if analysis.top_level_names.contains(top_name) {
-            continue;
-        }
-
-        // Skip if defined in another open file (cross-file)
-        if let Some(index) = project_index {
-            if !index.find_definitions(top_name, None).is_empty() {
-                continue;
+        if !defined.contains(top) {
+            if let Some(value_start) = attr.value_start {
+                if let Some(pos) = value.find(&format!("${signal}")) {
+                    let start = value_start + 1 + pos;
+                    let end = start + 1 + signal.len();
+                    let range = byte_range_to_lsp_range(line_index, start, end);
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::HINT),
+                        source: Some("datastar".to_string()),
+                        message: format!(
+                            "Undefined signal: '${signal}' is not defined in this document."
+                        ),
+                        ..Default::default()
+                    });
+                }
             }
         }
-
-        let range = crate::util::byte_range_to_lsp_range(
-            line_index,
-            ref_.byte_offset,
-            ref_.byte_offset + 1 + ref_.name.len(),
-        );
-        diagnostics.push(Diagnostic {
-            range,
-            severity: Some(DiagnosticSeverity::HINT),
-            source: Some("datastar".to_string()),
-            message: format!(
-                "Undefined signal: '${}' is not defined in any open file.",
-                ref_.name
-            ),
-            ..Default::default()
-        });
     }
 }
 
@@ -326,10 +396,8 @@ mod tests {
     use super::*;
 
     fn diags_for(html: &str) -> Vec<Diagnostic> {
-        let parsed = crate::parser::html::parse_html(html.as_bytes()).unwrap();
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        generate(&line_index, &parsed.1, &analysis, None)
+        let li = LineIndex::new(html.to_string());
+        generate(&li, html, None)
     }
 
     #[test]

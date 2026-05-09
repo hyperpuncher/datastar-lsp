@@ -1,107 +1,158 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::project_index::ProjectIndex;
-use crate::analysis::signals::{self, SignalAnalysis};
+use crate::analysis::ts_util::AttrData;
 use crate::line_index::LineIndex;
 
-/// Find all references to the signal or action at the given position.
-/// Searches local document first, then cross-file index.
+/// Find all references to a signal at the given position.
 pub fn find_references(
     line_index: &LineIndex,
+    text: &str,
     position: Position,
     uri: &Url,
-    analysis: &SignalAnalysis,
-    project_index: Option<&ProjectIndex>,
+    project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) -> Vec<Location> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
-    let bytes = line_index.text().as_bytes();
 
-    // Find which signal reference the cursor is on
-    let cursor_name = signals::find_signal_name_at_offset(bytes, offset);
-
-    let top_name = match cursor_name {
-        Some(ref name) => name.split('.').next().unwrap_or("").to_string(),
-        None => return vec![],
-    };
-
-    if top_name.is_empty() {
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_html::LANGUAGE.into())
+        .is_err()
+    {
         return vec![];
     }
+    let tree = match parser.parse(text, None) {
+        Some(t) => t,
+        None => return vec![],
+    };
+    let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), text);
 
-    // Check if signal is known (locally or cross-file)
-    let signal_exists = analysis.top_level_names.contains(&top_name)
-        || project_index
-            .map(|idx| !idx.find_definitions(&top_name, None).is_empty())
-            .unwrap_or(false);
+    let signal_name = if let Some(name) = find_signal_at_cursor(&attrs, offset) {
+        name
+    } else {
+        return vec![];
+    };
+    let top = signal_name.split('.').next().unwrap_or("");
 
-    if !signal_exists {
+    let definers: std::collections::BTreeSet<&str> = [
+        "signals",
+        "bind",
+        "computed",
+        "ref",
+        "indicator",
+        "match-media",
+    ]
+    .iter()
+    .copied()
+    .collect();
+
+    let is_defined = attrs
+        .iter()
+        .filter(|a| definers.contains(a.plugin_name.as_str()))
+        .any(|a| a.key.as_deref() == Some(top))
+        || project_index.as_ref().is_some_and(|idx| {
+            idx.iter().any(|e| {
+                let (_li, t) = e.value();
+                t.contains(&format!("data-signals:{top}"))
+                    || t.contains(&format!("data-bind:{top}"))
+            })
+        });
+    if !is_defined {
         return vec![];
     }
 
     let mut locations = Vec::new();
 
-    // Add definition locations
-    if let Some(defs) = analysis.definitions.get(&top_name) {
-        for def in defs {
-            let (line, col) = line_index.byte_to_position(def.byte_offset);
-            let pos = tower_lsp::lsp_types::Position {
-                line,
-                character: col,
-            };
+    // Local definitions
+    for attr in &attrs {
+        if definers.contains(attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
+            let (line, col) = line_index.byte_to_position(attr.name_start);
             locations.push(Location {
                 uri: uri.clone(),
                 range: Range {
-                    start: pos,
+                    start: Position {
+                        line,
+                        character: col,
+                    },
                     end: Position {
-                        line: pos.line,
-                        character: pos.character + def.name.len() as u32 + 1,
+                        line,
+                        character: col + top.len() as u32,
                     },
                 },
             });
         }
     }
 
-    // Add reference locations (all $top_name usages)
-    for ref_ in &analysis.references {
-        let ref_top = ref_.name.split('.').next().unwrap_or("");
-        if ref_top == top_name {
-            let (line, col) = line_index.byte_to_position(ref_.byte_offset);
-            let pos = tower_lsp::lsp_types::Position {
-                line,
-                character: col,
-            };
+    // Local $references
+    for attr in &attrs {
+        let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
+            continue;
+        };
+        let mut search = value.as_str();
+        while let Some(pos) = search.find(&format!("${top}")) {
+            let byte_pos = value_start + 1 + pos + (value.len() - search.len());
+            let (line, col) = line_index.byte_to_position(byte_pos);
             locations.push(Location {
                 uri: uri.clone(),
                 range: Range {
-                    start: pos,
+                    start: Position {
+                        line,
+                        character: col,
+                    },
                     end: Position {
-                        line: pos.line,
-                        character: pos.character + ref_.name.len() as u32 + 1,
+                        line,
+                        character: col + 1 + top.len() as u32,
                     },
                 },
             });
+            search = &search[pos + 1..];
         }
     }
 
-    // Add cross-file references from project index
+    // Cross-file
     if let Some(index) = project_index {
-        for (cross_uri, byte_offset, len) in index.find_all_references(&top_name) {
-            if &cross_uri == uri {
-                continue; // Already added locally
+        for entry in index.iter() {
+            let (cross_li, cross_text) = entry.value();
+            if entry.key() == uri {
+                continue;
             }
-            if let Some((line_index, _, _)) = index.get(&cross_uri) {
-                let (line, col) = line_index.byte_to_position(byte_offset);
-                let pos = tower_lsp::lsp_types::Position {
-                    line,
-                    character: col,
-                };
+            for prefix in &[
+                "data-signals:",
+                "data-bind:",
+                "data-computed:",
+                "data-ref:",
+                "data-indicator:",
+            ] {
+                let pattern = format!("{prefix}{top}");
+                for (pos, _) in cross_text.match_indices(&pattern) {
+                    let (line, col) = cross_li.byte_to_position(pos + prefix.len());
+                    locations.push(Location {
+                        uri: entry.key().clone(),
+                        range: Range {
+                            start: Position {
+                                line,
+                                character: col,
+                            },
+                            end: Position {
+                                line,
+                                character: col + top.len() as u32,
+                            },
+                        },
+                    });
+                }
+            }
+            let dollar = format!("${top}");
+            for (pos, _) in cross_text.match_indices(&dollar) {
+                let (line, col) = cross_li.byte_to_position(pos);
                 locations.push(Location {
-                    uri: cross_uri.clone(),
+                    uri: entry.key().clone(),
                     range: Range {
-                        start: pos,
+                        start: Position {
+                            line,
+                            character: col,
+                        },
                         end: Position {
-                            line: pos.line,
-                            character: pos.character + len as u32,
+                            line,
+                            character: col + dollar.len() as u32,
                         },
                     },
                 });
@@ -112,6 +163,61 @@ pub fn find_references(
     locations
 }
 
+fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String> {
+    for attr in attrs {
+        let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
+            continue;
+        };
+        let value_end = value_start + value.len() + 2;
+        if offset < value_start || offset > value_end {
+            continue;
+        }
+        let rel = offset.saturating_sub(value_start + 1);
+        if rel >= value.len() {
+            return None;
+        }
+        let bytes = value.as_bytes();
+        if bytes[rel] == b'$' {
+            return read_signal_name(&value[rel + 1..]);
+        }
+        if bytes[rel].is_ascii_alphanumeric()
+            || bytes[rel] == b'_'
+            || bytes[rel] == b'-'
+            || bytes[rel] == b'.'
+        {
+            let mut start = rel;
+            while start > 0 {
+                let c = bytes[start - 1];
+                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start > 0 && bytes[start - 1] == b'$' {
+                return read_signal_name(&value[start..]);
+            }
+        }
+    }
+    None
+}
+
+fn read_signal_name(s: &str) -> Option<String> {
+    let end = s
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .unwrap_or(s.len());
+    let raw = &s[..end];
+    let trimmed = raw
+        .trim_end_matches("++")
+        .trim_end_matches("--")
+        .trim_end_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,33 +225,30 @@ mod tests {
     fn refs_for(html: &str, cursor: &str) -> Vec<Location> {
         let uri = Url::parse("file:///test.html").unwrap();
         let offset = html.find(cursor).unwrap();
-        let line_index = crate::line_index::LineIndex::new(html.to_string());
-        let (line, col) = line_index.byte_to_position(offset);
-        let pos = Position {
-            line,
-            character: col + 1,
-        };
-        let analysis = crate::analysis::signals::analyze_signals(html);
-        find_references(&line_index, pos, &uri, &analysis, None)
+        let li = LineIndex::new(html.to_string());
+        let (line, col) = li.byte_to_position(offset);
+        find_references(
+            &li,
+            html,
+            Position {
+                line,
+                character: col + 1,
+            },
+            &uri,
+            None,
+        )
     }
 
     #[test]
     fn test_find_references() {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span><button data-on:click="$counter++">+</button></div>"#;
         let locs = refs_for(html, "$counter");
-        assert!(
-            locs.len() >= 3,
-            "expected >=3 references, got {}",
-            locs.len()
-        );
+        assert!(locs.len() >= 3, "got {}", locs.len());
     }
 
     #[test]
     fn test_no_references_for_undefined() {
         let locs = refs_for(r#"<div data-text="$foo"></div>"#, "$foo");
-        assert!(
-            locs.is_empty(),
-            "undefined signal should have no references"
-        );
+        assert!(locs.is_empty());
     }
 }

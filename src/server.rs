@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tower_lsp::jsonrpc::Result;
@@ -9,14 +8,10 @@ use datastar_lsp::analysis::{
     code_actions, completions, diagnostics, goto_def, hover, project_index::ProjectIndex,
     references, rename,
 };
-use datastar_lsp::parser::html::{self, DataAttribute};
 
 pub struct Backend {
     client: Client,
     project_index: Arc<ProjectIndex>,
-    /// Monotonic document version — incremented on each did_change.
-    /// Handlers check this before returning results.
-    doc_version: AtomicU64,
 }
 
 impl Backend {
@@ -24,28 +19,6 @@ impl Backend {
         Self {
             client,
             project_index: Arc::new(ProjectIndex::new()),
-            doc_version: AtomicU64::new(0),
-        }
-    }
-
-    /// Parse document and index all state (text, attrs, signal analysis).
-    fn index_document(&self, uri: &Url, text: &str) {
-        let attrs = self.parse_document(uri, text);
-        let analysis = datastar_lsp::analysis::signals::analyze_signals(text);
-        self.project_index
-            .index(uri, text.to_string(), attrs, analysis);
-    }
-
-    fn parse_document(&self, uri: &Url, text: &str) -> Vec<DataAttribute> {
-        let path = uri.path();
-        if path.ends_with(".jsx") || path.ends_with(".tsx") {
-            html::parse_jsx(text.as_bytes())
-                .map(|(_, a)| a)
-                .unwrap_or_default()
-        } else {
-            html::parse_html(text.as_bytes())
-                .map(|(_, a)| a)
-                .unwrap_or_default()
         }
     }
 }
@@ -98,17 +71,14 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text.clone();
         tracing::info!("Opened: {uri}");
-
-        self.index_document(&uri, &text);
+        self.project_index.index(&uri, text.clone());
         self.publish_diagnostics(&uri, &text).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         let text = params.content_changes[0].text.clone();
-
-        self.doc_version.fetch_add(1, Ordering::Release);
-        self.index_document(&uri, &text);
+        self.project_index.index(&uri, text.clone());
         self.publish_diagnostics(&uri, &text).await;
     }
 
@@ -121,56 +91,25 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let version = self.doc_version.load(Ordering::Acquire);
 
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
-            None => return Ok(None),
-        };
-        let analysis = match self.project_index.analysis(uri) {
-            Some(a) => a,
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
-        let result = hover::generate(
-            &line_index,
-            position,
-            &self.project_index.attrs(uri).unwrap_or_default(),
-            &analysis,
-        );
-
-        if self.doc_version.load(Ordering::Acquire) != version {
-            return Ok(None);
-        }
-        Ok(result)
+        Ok(hover::generate(&line_index, &text, position))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let version = self.doc_version.load(Ordering::Acquire);
 
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
-            None => return Ok(None),
-        };
-        let data_attrs = self.project_index.attrs(uri).unwrap_or_default();
-        let signal_analysis = match self.project_index.analysis(uri) {
-            Some(a) => a,
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
-        let ctx = completions::CompletionContext {
-            line_index: &line_index,
-            position,
-            data_attrs,
-            signal_analysis: &signal_analysis,
-        };
-
-        let items = completions::generate(&ctx);
-        if self.is_stale(version) {
-            return Ok(None);
-        }
+        let items = completions::generate(&line_index, &text, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -180,63 +119,44 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let version = self.doc_version.load(Ordering::Acquire);
 
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
-            None => return Ok(None),
-        };
-        let attrs = self.project_index.attrs(uri).unwrap_or_default();
-        let analysis = match self.project_index.analysis(uri) {
-            Some(a) => a,
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
-        let result = goto_def::goto_definition(
+        Ok(goto_def::goto_definition(
             &line_index,
+            &text,
             position,
             uri,
-            &attrs,
-            &analysis,
             Some(&self.project_index),
-        );
-        if self.is_stale(version) {
-            return Ok(None);
-        }
-        Ok(result)
+        ))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let version = self.doc_version.load(Ordering::Acquire);
 
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
-            None => return Ok(None),
-        };
-        let analysis = match self.project_index.analysis(uri) {
-            Some(a) => a,
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
-        let result = Some(references::find_references(
+        Ok(Some(references::find_references(
             &line_index,
+            &text,
             position,
             uri,
-            &analysis,
             Some(&self.project_index),
-        ));
-        if self.is_stale(version) {
-            return Ok(None);
-        }
-        Ok(result)
+        )))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
+
+        let (line_index, _text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
@@ -246,7 +166,6 @@ impl LanguageServer for Backend {
                 actions.extend(code_actions::generate(&line_index, uri, diag));
             }
         }
-
         Ok(Some(actions))
     }
 
@@ -254,28 +173,20 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let new_name = &params.new_name;
-        let version = self.doc_version.load(Ordering::Acquire);
 
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
-            None => return Ok(None),
-        };
-        let analysis = match self.project_index.analysis(uri) {
-            Some(a) => a,
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return Ok(None),
         };
 
         let result = rename::rename_signal(
             &line_index,
+            &text,
             position,
             uri,
             new_name,
-            &analysis,
             Some(&self.project_index),
         );
-        if self.is_stale(version) {
-            return Ok(None);
-        }
         match result {
             Some(changes) => Ok(Some(WorkspaceEdit {
                 changes: Some(changes),
@@ -287,20 +198,12 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
-    /// Check if document version changed since we started processing.
-    fn is_stale(&self, version: u64) -> bool {
-        self.doc_version.load(Ordering::Acquire) != version
-    }
-
-    async fn publish_diagnostics(&self, uri: &Url, _text: &str) {
-        let line_index = match self.project_index.line_index(uri) {
-            Some(li) => li,
+    async fn publish_diagnostics(&self, uri: &Url, text: &str) {
+        let (line_index, _) = match self.project_index.get(uri) {
+            Some(e) => e,
             None => return,
         };
-        let attrs = self.project_index.attrs(uri).unwrap_or_default();
-        let analysis = self.project_index.analysis(uri).unwrap_or_default();
-        let diags =
-            diagnostics::generate(&line_index, &attrs, &analysis, Some(&self.project_index));
+        let diags = diagnostics::generate(&line_index, text, Some(&self.project_index));
         self.client
             .publish_diagnostics(uri.clone(), diags, None)
             .await;

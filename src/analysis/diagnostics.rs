@@ -6,6 +6,78 @@ use crate::data::{actions, attributes, modifiers};
 use crate::line_index::LineIndex;
 use crate::util::byte_range_to_lsp_range;
 
+/// Common HTML DOM events used with `data-on:`.
+const KNOWN_DOM_EVENTS: &[&str] = &[
+    // Mouse events
+    "click",
+    "dblclick",
+    "contextmenu",
+    "mousedown",
+    "mouseup",
+    "mousemove",
+    "mouseenter",
+    "mouseleave",
+    "mouseover",
+    "mouseout",
+    "wheel",
+    // Keyboard events
+    "keydown",
+    "keyup",
+    "keypress",
+    // Form events
+    "focus",
+    "blur",
+    "change",
+    "input",
+    "submit",
+    "reset",
+    "select",
+    // Window/document events
+    "load",
+    "unload",
+    "beforeunload",
+    "scroll",
+    "resize",
+    "error",
+    // Touch events
+    "touchstart",
+    "touchend",
+    "touchmove",
+    "touchcancel",
+    // Pointer events
+    "pointerdown",
+    "pointerup",
+    "pointermove",
+    "pointerenter",
+    "pointerleave",
+    "pointercancel",
+    // Drag events
+    "drag",
+    "dragstart",
+    "dragend",
+    "dragenter",
+    "dragleave",
+    "dragover",
+    "drop",
+    // Clipboard events
+    "copy",
+    "cut",
+    "paste",
+    // Media events
+    "play",
+    "pause",
+    "ended",
+    "volumechange",
+    "timeupdate",
+    // Animation/transition
+    "animationend",
+    "animationstart",
+    "transitionend",
+    // Datastar custom events
+    "datastar-fetch",
+    "rocket-launched",
+];
+
 /// Generate diagnostics by parsing the document with tree-sitter and walking data-* attrs.
 pub fn generate(
     line_index: &LineIndex,
@@ -67,6 +139,17 @@ fn check_attribute_validity(
     let def = match registry.get(attr.plugin_name.as_str()) {
         Some(d) => d,
         None => {
+            // Plain HTML data-* attributes (no colon, no __modifiers, no Datastar value)
+            // are legitimate HTML — don't flag them.
+            let has_colon = attr.raw_name.contains(':');
+            let has_modifiers = !attr.modifiers.is_empty();
+            let has_datastar_value = attr
+                .value
+                .as_ref()
+                .is_some_and(|v| v.contains('$') || v.contains('@'));
+            if !has_colon && !has_modifiers && !has_datastar_value {
+                return;
+            }
             let range = byte_range_to_lsp_range(
                 line_index,
                 attr.name_start,
@@ -100,6 +183,23 @@ fn check_attribute_validity(
                 message: format!("Missing key: 'data-{}' requires a key.", attr.plugin_name),
                 ..Default::default()
             });
+        }
+        (attributes::Requirement::Must, Some(key)) if attr.plugin_name == "on" => {
+            if !KNOWN_DOM_EVENTS.contains(&key.as_str()) {
+                let pos = attr.raw_name.find(':').unwrap_or(0);
+                let range = byte_range_to_lsp_range(
+                    line_index,
+                    attr.name_start + pos + 1,
+                    attr.name_start + pos + 1 + key.len(),
+                );
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("datastar".to_string()),
+                    message: format!("Unknown event: '{key}' is not a recognized event name.",),
+                    ..Default::default()
+                });
+            }
         }
         (attributes::Requirement::Denied, Some(key)) => {
             let pos = attr.raw_name.find(':').unwrap_or(0);
@@ -347,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_unknown_attribute() {
-        let diags = diags_for(r#"<div data-fake-thing="x"></div>"#);
+        let diags = diags_for(r#"<div data-fake:thing="x"></div>"#);
         assert!(diags
             .iter()
             .any(|d| d.message.contains("Unknown Datastar attribute")));

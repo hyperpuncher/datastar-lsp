@@ -16,7 +16,7 @@ pub fn generate(
     let cursor_byte = line_index.position_to_byte_offset(position.line, position.character);
     let mut items = Vec::new();
 
-    let Some((_, attrs)) = ts_util::parse_and_collect(text, uri) else {
+    let Some((tree, attrs)) = ts_util::parse_and_collect(text, uri) else {
         return vec![];
     };
 
@@ -76,8 +76,35 @@ pub fn generate(
         }
     }
 
-    items.extend(complete_attribute_names(&attrs));
+    // Only offer data-* completions inside JSX/HTML markup
+    if is_in_jsx_context(&tree, cursor_byte) {
+        items.extend(complete_attribute_names(&attrs));
+    }
     deduplicate_and_sort(items)
+}
+
+/// Check if a byte offset is inside a JSX/HTML context in the tree.
+fn is_in_jsx_context(tree: &tree_sitter::Tree, offset: usize) -> bool {
+    is_inside_jsx_recursive(tree.root_node(), offset)
+}
+
+fn is_inside_jsx_recursive(node: tree_sitter::Node, offset: usize) -> bool {
+    if node.start_byte() > offset || node.end_byte() < offset {
+        return false;
+    }
+    let kind = node.kind();
+    // JSX elements and attributes are valid Datastar contexts
+    if kind.starts_with("jsx_") || kind == "attribute" {
+        return true;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            if is_inside_jsx_recursive(child, offset) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn complete_attribute_names(existing: &[AttrData]) -> Vec<CompletionItem> {

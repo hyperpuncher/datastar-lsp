@@ -75,20 +75,28 @@ pub fn generate(
             value_completions(&mut items, &attrs, cursor_byte, value_start, &full_value);
         }
         CursorPosition::InMarkup => {
-            // Cursor just past a data-* attribute name with __ — show modifiers.
-            // e.g. <button data-on:click__>|  (cursor after > but after __ in name)
+            // Cursor just past a data-* attribute name — check for key/modifier completions.
+            // e.g. <button data-on:click__>| or <input data-bind: |>|
             let just_after = attrs
                 .iter()
                 .find(|a| {
-                    a.raw_name.contains("__")
-                        && cursor_byte >= a.name_start + a.name_len
-                        && cursor_byte <= a.name_start + a.name_len + 2
-                        && a.key.as_deref().is_some_and(|k| !k.is_empty())
+                    let name_end = a.name_start + a.name_len;
+                    cursor_byte >= name_end && cursor_byte <= name_end + 3
                 });
             if let Some(attr) = just_after {
                 if let Some(def) = attributes::all().get(attr.plugin_name.as_str()) {
-                    items.extend(complete_modifiers(def, &attr.modifiers));
-                    return deduplicate_and_sort(items);
+                    let has_colon = attr.raw_name.contains(':') || attr.has_trailing_colon;
+                    let has_modifiers = attr.raw_name.contains("__");
+                    let has_key = attr.key.as_deref().is_some_and(|k| !k.is_empty());
+
+                    if has_modifiers && has_key {
+                        items.extend(complete_modifiers(def, &attr.modifiers));
+                        return deduplicate_and_sort(items);
+                    }
+                    if has_colon && !has_key {
+                        items.extend(complete_keys(&attr.plugin_name));
+                        return deduplicate_and_sort(items);
+                    }
                 }
             }
             // Cursor is in markup but not inside a data-* attr — offer attribute names

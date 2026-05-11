@@ -10,6 +10,9 @@ pub struct AttrData {
     pub value: Option<String>,
     pub value_start: Option<usize>,
     pub modifiers: Vec<(String, Vec<String>)>,
+    /// TSX: true when a bare `:` follows the attribute name as a sibling node.
+    /// e.g. `<input data-bind: />` — the `:` is not in `property_identifier`.
+    pub has_trailing_colon: bool,
 }
 
 /// Pick the tree-sitter language for a file URI.
@@ -112,6 +115,15 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
         return None;
     }
     let parsed = parse_attribute_key(&name);
+
+    // Detect TSX trailing colon: check if next sibling of the attribute node is `:` or ERROR `:`
+    let has_trailing_colon = node.next_sibling()
+        .map(|sib| {
+            let txt = sib.utf8_text(src).ok().unwrap_or("");
+            txt == ":" || sib.kind() == "ERROR"
+        })
+        .unwrap_or(false);
+
     Some(AttrData {
         name_len: name.len(),
         raw_name: name.clone(),
@@ -121,6 +133,7 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
         value,
         value_start,
         modifiers: parsed.modifiers,
+        has_trailing_colon,
     })
 }
 

@@ -123,7 +123,7 @@ fn examples() -> ExampleMap {
             }][..],
         ),
         (
-            "intersects",
+            "on-intersect",
             &[
                 Example {
                     title: "Lazy load on visible",

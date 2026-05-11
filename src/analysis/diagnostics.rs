@@ -318,40 +318,29 @@ fn check_value_actions(
         Some(v) => v,
         None => return,
     };
-    let bytes = value.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'@' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
-            if next.is_ascii_alphabetic() || next == b'_' {
-                let mut j = i + 1;
-                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-                    j += 1;
-                }
-                let name = std::str::from_utf8(&bytes[i + 1..j]).unwrap_or("");
-                if !name.is_empty()
-                    && !registry.contains_key(name)
-                    && !name.starts_with(|c: char| c.is_ascii_uppercase())
-                {
-                    let value_start = attr.value_start.unwrap_or(0);
-                    let start = value_start + i;
-                    let end = start + (j - i);
-                    let range = byte_range_to_lsp_range(line_index, start, end);
-                    diagnostics.push(Diagnostic {
-                        range,
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        source: Some("datastar".to_string()),
-                        message: format!(
-                            "Unknown action: '@{name}' is not a recognized Datastar action."
-                        ),
-                        ..Default::default()
-                    });
-                }
-                i = j;
-                continue;
-            }
+    for span in crate::analysis::value_scanner::scan_value(value) {
+        if span.kind != crate::analysis::value_scanner::SpanKind::AtAction {
+            continue;
         }
-        i += 1;
+        if registry.contains_key(span.name.as_str())
+            || span.name.starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            continue;
+        }
+        let vs = attr.value_start.unwrap_or(0);
+        let start = vs + span.start;
+        let end = vs + span.end;
+        let range = byte_range_to_lsp_range(line_index, start, end);
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("datastar".to_string()),
+            message: format!(
+                "Unknown action: '@{}' is not a recognized Datastar action.",
+                span.name
+            ),
+            ..Default::default()
+        });
     }
 }
 
@@ -377,8 +366,11 @@ fn emit_undefined_signals(
         Some(v) => v,
         None => return,
     };
-    for signal in signal_util::scan_signals(value) {
-        let top = signal.split('.').next().unwrap_or("");
+    for span in crate::analysis::value_scanner::scan_value(value) {
+        if span.kind != crate::analysis::value_scanner::SpanKind::DollarSignal {
+            continue;
+        }
+        let top = span.name.split('.').next().unwrap_or("");
         if signal_util::is_builtin_signal(top) {
             continue;
         }
@@ -387,10 +379,10 @@ fn emit_undefined_signals(
         }
         if let Some(index) = project_index {
             if !signal_util::index_find_def(index, top) {
-                emit_undefined(attr, value, line_index, diagnostics, &signal);
+                emit_undefined(attr, value, line_index, diagnostics, &span.name);
             }
         } else {
-            emit_undefined(attr, value, line_index, diagnostics, &signal);
+            emit_undefined(attr, value, line_index, diagnostics, &span.name);
         }
     }
 }
@@ -402,17 +394,19 @@ fn emit_undefined(
     diagnostics: &mut Vec<Diagnostic>,
     signal: &str,
 ) {
-    if let (Some(value_start), Some(pos)) = (attr.value_start, value.find(&format!("${signal}"))) {
-        let start = value_start + pos;
-        let end = start + 1 + signal.len();
-        let range = byte_range_to_lsp_range(line_index, start, end);
-        diagnostics.push(Diagnostic {
-            range,
-            severity: Some(DiagnosticSeverity::HINT),
-            source: Some("datastar".to_string()),
-            message: format!("Undefined signal: '${signal}' is not defined in this document."),
-            ..Default::default()
-        });
+    if let Some(value_start) = attr.value_start {
+        if let Some(pos) = value.find(&format!("${signal}")) {
+            let start = value_start + pos;
+            let end = start + 1 + signal.len();
+            let range = byte_range_to_lsp_range(line_index, start, end);
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::HINT),
+                source: Some("datastar".to_string()),
+                message: format!("Undefined signal: '${signal}' is not defined in this document."),
+                ..Default::default()
+            });
+        }
     }
 }
 

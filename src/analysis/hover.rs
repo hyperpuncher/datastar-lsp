@@ -101,41 +101,21 @@ fn hover_value_text(
     rel: usize,
     attrs: &[crate::analysis::ts_util::AttrData],
 ) -> Option<Hover> {
-    let bytes = value.as_bytes();
-    if rel >= bytes.len() {
-        return None;
-    }
+    use crate::analysis::value_scanner::{span_at, signal_at_cursor, SpanKind};
 
-    if bytes[rel] == b'$' {
-        return signal_util::read_signal_name(&value[rel + 1..])
-            .and_then(|n| hover_signal(&n, attrs));
-    }
-
-    if bytes[rel] == b'@' {
-        return hover_action_name(value, rel);
-    }
-
-    if bytes[rel].is_ascii_alphanumeric()
-        || bytes[rel] == b'_'
-        || bytes[rel] == b'-'
-        || bytes[rel] == b'.'
-    {
-        let mut start = rel;
-        while start > 0 {
-            let c = bytes[start - 1];
-            if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                start -= 1;
-            } else {
-                break;
+    if let Some(span) = span_at(value, rel) {
+        return match span.kind {
+            SpanKind::DollarSignal => hover_signal(&span.name, attrs),
+            SpanKind::AtAction => hover_action_name(&span.name),
+            SpanKind::EvtDotProp => {
+                mk_hover(&format!("## `evt.{}`\n\nEvent property on `$evt` object.", span.name))
             }
-        }
-        if start > 0 && bytes[start - 1] == b'$' {
-            return signal_util::read_signal_name(&value[start..])
-                .and_then(|n| hover_signal(&n, attrs));
-        }
-        if start > 0 && bytes[start - 1] == b'@' {
-            return hover_action_name(value, start - 1);
-        }
+        };
+    }
+
+    // Cursor may be between tokens — try backtracking to find a signal
+    if let Some(name) = signal_at_cursor(value, rel) {
+        return hover_signal(&name, attrs);
     }
 
     None
@@ -165,13 +145,7 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
     }
 }
 
-fn hover_action_name(value: &str, offset: usize) -> Option<Hover> {
-    let bytes = value.as_bytes();
-    let mut end = offset + 1;
-    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
-        end += 1;
-    }
-    let name = std::str::from_utf8(&bytes[offset + 1..end]).unwrap_or("");
+fn hover_action_name(name: &str) -> Option<Hover> {
     let registry = actions::all();
 
     if let Some(def) = registry.get(name) {

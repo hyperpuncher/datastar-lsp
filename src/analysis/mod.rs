@@ -11,3 +11,4 @@ pub mod references;
 pub mod rename;
 pub mod signal_util;
 pub mod ts_util;
+pub mod value_scanner;

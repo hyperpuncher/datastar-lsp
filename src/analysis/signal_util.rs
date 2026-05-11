@@ -1,4 +1,5 @@
 use crate::analysis::ts_util::AttrData;
+use crate::analysis::value_scanner;
 
 /// Attribute plugin names that define signals.
 pub const DEFINERS: &[&str] = &[
@@ -33,61 +34,6 @@ pub fn is_global_modifier(key: &str) -> bool {
     GLOBAL_MODIFIERS.contains(&key)
 }
 
-/// Scan a value string for `$signal` references, trimming `++`/`--`/`.` postfixes.
-pub fn scan_signals(value: &str) -> Vec<String> {
-    let mut results = Vec::new();
-    let bytes = value.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
-            if next.is_ascii_alphabetic() || next == b'_' {
-                let start = i + 1;
-                let mut j = start;
-                while j < bytes.len()
-                    && (bytes[j].is_ascii_alphanumeric()
-                        || bytes[j] == b'_'
-                        || bytes[j] == b'-'
-                        || bytes[j] == b'.')
-                {
-                    j += 1;
-                }
-                if j > start {
-                    let raw = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
-                    let trimmed = raw
-                        .trim_end_matches("++")
-                        .trim_end_matches("--")
-                        .trim_end_matches('.');
-                    if !trimmed.is_empty() {
-                        results.push(trimmed.to_string());
-                    }
-                }
-                i = j;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    results
-}
-
-/// Read a signal name starting after `$`. Trims `++`/`--`/`.` postfixes.
-pub fn read_signal_name(after_dollar: &str) -> Option<String> {
-    let end = after_dollar
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
-        .unwrap_or(after_dollar.len());
-    let raw = &after_dollar[..end];
-    let trimmed = raw
-        .trim_end_matches("++")
-        .trim_end_matches("--")
-        .trim_end_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 /// Find the signal name at a cursor byte offset within attribute values.
 pub fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String> {
     for attr in attrs {
@@ -102,27 +48,8 @@ pub fn find_signal_at_cursor(attrs: &[AttrData], offset: usize) -> Option<String
         if rel >= value.len() {
             return None;
         }
-        let bytes = value.as_bytes();
-        if bytes[rel] == b'$' {
-            return read_signal_name(&value[rel + 1..]);
-        }
-        if bytes[rel].is_ascii_alphanumeric()
-            || bytes[rel] == b'_'
-            || bytes[rel] == b'-'
-            || bytes[rel] == b'.'
-        {
-            let mut start = rel;
-            while start > 0 {
-                let c = bytes[start - 1];
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' {
-                    start -= 1;
-                } else {
-                    break;
-                }
-            }
-            if start > 0 && bytes[start - 1] == b'$' {
-                return read_signal_name(&value[start..]);
-            }
+        if let Some(name) = value_scanner::signal_at_cursor(value, rel) {
+            return Some(name);
         }
     }
     None
@@ -167,30 +94,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_signal_name_basic() {
-        assert_eq!(read_signal_name("counter"), Some("counter".into()));
-    }
-
-    #[test]
-    fn test_read_signal_name_with_postfix() {
-        assert_eq!(read_signal_name("counter++"), Some("counter".into()));
-        assert_eq!(read_signal_name("counter--"), Some("counter".into()));
-    }
-
-    #[test]
-    fn test_read_signal_name_dotted() {
-        assert_eq!(read_signal_name("user.name"), Some("user.name".into()));
-    }
-
-    #[test]
-    fn test_scan_signals() {
-        let signals = scan_signals("$counter + $user.name > 0");
-        assert_eq!(signals, vec!["counter", "user.name"]);
-    }
-
-    #[test]
-    fn test_scan_signals_with_postfix() {
-        let signals = scan_signals("$counter++");
-        assert_eq!(signals, vec!["counter"]);
+    fn test_is_valid_signal_name() {
+        assert!(is_valid_signal_name("counter"));
+        assert!(is_valid_signal_name("user-name"));
+        assert!(is_valid_signal_name("my_signal"));
+        assert!(!is_valid_signal_name(""));
+        assert!(!is_valid_signal_name("my name"));
     }
 }

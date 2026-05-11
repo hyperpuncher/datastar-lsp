@@ -4,10 +4,11 @@ use tower_lsp::lsp_types::{
 
 use crate::analysis::cursor::{self, CursorPosition};
 use crate::analysis::diagnostics::KNOWN_DOM_EVENTS;
-use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
 use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
+
+use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
 
 pub fn generate(
     line_index: &LineIndex,
@@ -74,6 +75,22 @@ pub fn generate(
             value_completions(&mut items, &attrs, cursor_byte, value_start, &full_value);
         }
         CursorPosition::InMarkup => {
+            // Cursor just past a data-* attribute name with __ — show modifiers.
+            // e.g. <button data-on:click__>|  (cursor after > but after __ in name)
+            let just_after = attrs
+                .iter()
+                .find(|a| {
+                    a.raw_name.contains("__")
+                        && cursor_byte >= a.name_start + a.name_len
+                        && cursor_byte <= a.name_start + a.name_len + 2
+                        && a.key.as_deref().is_some_and(|k| !k.is_empty())
+                });
+            if let Some(attr) = just_after {
+                if let Some(def) = attributes::all().get(attr.plugin_name.as_str()) {
+                    items.extend(complete_modifiers(def, &attr.modifiers));
+                    return deduplicate_and_sort(items);
+                }
+            }
             // Cursor is in markup but not inside a data-* attr — offer attribute names
             items.extend(complete_attribute_names(&attrs));
         }
@@ -93,8 +110,19 @@ fn value_completions(
     value_start: usize,
     full_value: &str,
 ) {
-    if cursor_byte <= value_start {
-        // Cursor at or before value start — show based on first char
+    use crate::analysis::value_scanner::{scan_value, signal_at_cursor, SpanKind};
+
+    let rel = cursor_byte.saturating_sub(value_start);
+    if rel > full_value.len() {
+        return;
+    }
+
+    // Cursor at/past end of value — check what the value starts with
+    if rel >= full_value.len() {
+        if full_value.starts_with("evt.") || full_value == "evt" {
+            items.extend(complete_evt_props(attrs));
+            return;
+        }
         if full_value.starts_with('@') {
             items.extend(complete_actions());
         } else if full_value.starts_with('$') {
@@ -103,26 +131,45 @@ fn value_completions(
         return;
     }
 
-    let rel = cursor_byte.saturating_sub(value_start);
-    if rel == 0 || rel > full_value.len() {
-        return;
-    }
-
-    let before = &full_value[..rel.min(full_value.len())];
+    let before = &full_value[..rel];
 
     // evt. property completions — type-narrowed by event key
     if before.ends_with("evt.") || before.ends_with("evt") {
         items.extend(complete_evt_props(attrs));
         return;
     }
-    if let Some(pos) = before.rfind("evt.") {
-        let prefix = &before[pos + 4..];
-        if !prefix.contains(' ') && !prefix.contains(')') {
-            items.extend(complete_evt_props_filtered(attrs, Some(prefix)));
-            return;
+    let evt_pos = before.rfind("evt.");
+
+    // Check if cursor is on a $ or @ span
+    if let Some(span) = scan_value(full_value)
+        .iter()
+        .find(|s| rel >= s.start && rel <= s.end)
+    {
+        match span.kind {
+            SpanKind::DollarSignal => {
+                // Show signals when cursor is on a $signal
+                items.extend(complete_signals(attrs));
+                return;
+            }
+            SpanKind::AtAction => {
+                items.extend(complete_actions());
+                return;
+            }
+            SpanKind::EvtDotProp => {
+                if let Some(epos) = evt_pos {
+                    let prefix = &before[epos + 4..];
+                    if !prefix.contains(' ') && !prefix.contains(')') {
+                        items.extend(complete_evt_props_filtered(attrs, Some(prefix)));
+                        return;
+                    }
+                }
+                items.extend(complete_evt_props(attrs));
+                return;
+            }
         }
     }
 
+    // Cursor just after $ or @ with no identifier yet
     if before.ends_with('$') || before.ends_with("$.") {
         items.extend(complete_signals(attrs));
     } else if before.ends_with('@') {
@@ -141,6 +188,15 @@ fn value_completions(
         let after = &before[pos + 1..];
         if !after.contains(' ') && !after.contains('(') {
             items.extend(complete_actions());
+        }
+    }
+
+    // Try signal_at_cursor for backtracking
+    if let Some(name) = signal_at_cursor(full_value, rel) {
+        let top = name.split('.').next().unwrap_or("");
+        // Only add if not already handled
+        if !items.iter().any(|i| i.label == format!("${top}")) {
+            items.extend(complete_signals_filtered(attrs, Some(top)));
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::parser::html::parse_attribute_key;
+use crate::attribute_name::parse_attribute_key;
 
 /// Lightweight attribute info extracted from tree-sitter parse.
 pub struct AttrData {

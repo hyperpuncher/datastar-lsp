@@ -47,19 +47,43 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
     }
 
     let name_start = name_node.start_byte();
+    let name_end = name_node.end_byte();
 
-    // Check if cursor is in the attribute name
-    if offset >= name_start && offset <= name_node.end_byte() {
-        if let Some(colon_pos) = name_text.find(':') {
-            if offset >= name_start + colon_pos {
-                return after_colon(name_text);
+    // Detect colon position — HTML includes it in attribute_name, TSX splits it out.
+    let colon_offset = name_text.find(':').map(|p| name_start + p).or_else(|| {
+        // TSX: look for a ":" sibling after the jsx_attribute node
+        let mut n = attr_node;
+        while let Some(next) = n.next_sibling() {
+            let txt = next.utf8_text(source.as_bytes()).ok()?;
+            if txt == ":" || txt.starts_with(':') {
+                return Some(next.start_byte());
             }
+            n = next;
         }
+        None
+    });
+
+    // Check if cursor is in the attribute name (or on the bare colon in TSX)
+    let at_or_after_colon = colon_offset.is_some_and(|co| offset >= co);
+    let in_name = offset >= name_start && offset <= name_end;
+
+    // Check value first — it takes precedence over colon detection
+    let val_result = find_value_in_attr(attr_node, source, offset);
+
+    if at_or_after_colon && val_result.is_none() {
+        let full_name = if name_text.contains(':') {
+            name_text.to_string()
+        } else {
+            format!("{name_text}:")
+        };
+        return after_colon(&full_name);
+    }
+
+    if in_name {
         return attribute_name(name_text);
     }
 
-    // Check if cursor is in the attribute value
-    if let Some(val) = find_value_in_attr(attr_node, source, offset) {
+    if let Some(val) = val_result {
         return val;
     }
 
@@ -151,28 +175,48 @@ fn attr_name_child(attr: Node) -> Option<Node> {
 
 /// Find the attribute node containing `offset`, or None if not in an attribute.
 fn find_attr_node(root: Node, offset: usize) -> Option<Node> {
-    let mut node = root;
-    loop {
-        if node.start_byte() > offset || node.end_byte() < offset {
-            return None;
-        }
-        if node.kind() == "attribute" || node.kind() == "jsx_attribute" {
-            return Some(node);
-        }
-        let mut found = false;
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.start_byte() <= offset && child.end_byte() >= offset {
-                    node = child;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if !found {
-            return None;
-        }
-    }
+	let mut node = root;
+	loop {
+		if node.start_byte() > offset || node.end_byte() < offset {
+			return None;
+		}
+		if node.kind() == "attribute" || node.kind() == "jsx_attribute" {
+			return Some(node);
+		}
+		let mut found = false;
+		for i in 0..node.child_count() {
+			if let Some(child) = node.child(i as u32) {
+				if child.start_byte() <= offset && child.end_byte() >= offset {
+					node = child;
+					found = true;
+					break;
+				}
+			}
+		}
+		if !found {
+			// TSX edge case: cursor on bare ":" after data-on (ERROR sibling, not in attr).
+			// Walk up from the leaf to find a parent with a jsx_attribute child.
+			if node.kind() == ":" || node.kind() == "ERROR" {
+				let mut parent = node.parent();
+				while let Some(p) = parent {
+					if p.kind() == "jsx_opening_element" || p.kind() == "start_tag" {
+						for i in 0..p.child_count() {
+							if let Some(sib) = p.child(i as u32) {
+								if (sib.kind() == "jsx_attribute" || sib.kind() == "attribute")
+									&& sib.end_byte() <= offset
+								{
+									return Some(sib);
+								}
+							}
+						}
+						return None;
+					}
+					parent = p.parent();
+				}
+			}
+			return None;
+		}
+	}
 }
 
 fn is_in_markup(root: Node, offset: usize) -> bool {
@@ -301,5 +345,86 @@ mod tests {
         let pos = detect_at(r#"<div data-on:></div>"#, 12);
         eprintln!("detect = {:?}", pos);
         assert!(matches!(pos, CursorPosition::AfterColon { .. }));
+    }
+
+    // ── TSX-specific tests ──
+
+    fn detect_at_tsx(text: &str, cursor_offset: usize) -> CursorPosition {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        detect(tree.root_node(), text, cursor_offset)
+    }
+
+    #[test]
+    fn test_tsx_after_bare_colon() {
+        // <button data-on:> — cursor on the bare colon (TSX splits : outside attribute)
+        let tsx = r#"export function T() { return <button data-on:></button> }"#;
+        let colon = tsx.find("data-on:").unwrap() + 7;
+        let pos = detect_at_tsx(tsx, colon);
+        assert!(
+            matches!(pos, CursorPosition::AfterColon { .. }),
+            "expected AfterColon, got {:?}",
+            pos
+        );
+    }
+
+    #[test]
+    fn test_tsx_after_colon_with_key() {
+        let tsx = r#"export function T() { return <button data-on:click></button> }"#;
+        let colon_end = tsx.find("data-on:click").unwrap() + 8;
+        let pos = detect_at_tsx(tsx, colon_end);
+        assert!(
+            matches!(pos, CursorPosition::AfterColon { .. }),
+            "expected AfterColon, got {:?}",
+            pos
+        );
+    }
+
+    #[test]
+    fn test_tsx_after_colon_modifiers() {
+        let tsx = r#"export function T() { return <button data-on:click__debounce></button> }"#;
+        let pos = detect_at_tsx(tsx, 55);
+        assert!(
+            matches!(pos, CursorPosition::AfterColon { .. }),
+            "expected AfterColon, got {:?}",
+            pos
+        );
+    }
+
+    #[test]
+    fn test_tsx_attr_value_string() {
+        let tsx = r#"export function T() { return <button data-on:click="x"></button> }"#;
+        let val = tsx.find("\"x\"").unwrap() + 1;
+        let pos = detect_at_tsx(tsx, val);
+        assert!(
+            matches!(pos, CursorPosition::AttributeValue { .. }),
+            "expected AttributeValue, got {:?}",
+            pos
+        );
+    }
+
+    #[test]
+    fn test_tsx_in_markup_no_data_attr() {
+        let tsx = r#"export function T() { return <div class="x"></div> }"#;
+        let pos = detect_at_tsx(tsx, 31); // inside class="x", not data-*
+        assert!(
+            matches!(pos, CursorPosition::InMarkup),
+            "expected InMarkup, got {:?}",
+            pos
+        );
+    }
+
+    #[test]
+    fn test_tsx_outside_markup_in_ts() {
+        let tsx = r#"export function T() { const x = 1; return <div></div> }"#;
+        let pos = detect_at_tsx(tsx, 26); // inside const x = 1
+        assert!(
+            matches!(pos, CursorPosition::None),
+            "expected None, got {:?}",
+            pos
+        );
     }
 }

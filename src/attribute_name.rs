@@ -7,6 +7,9 @@ pub struct ParsedKey {
 
 /// Parse a `data-*` attribute name into plugin, key, and modifiers.
 /// e.g. `data-on:click__debounce.500ms` → plugin="on", key="click", modifiers=[("debounce", ["500ms"])]
+///
+/// Tree-sitter HTML/TSX grammars do not decompose `__modifier.tag` or `:key`
+/// within attribute names, so we parse raw text here.
 pub fn parse_attribute_key(raw: &str) -> ParsedKey {
     let rest = &raw[5..];
 

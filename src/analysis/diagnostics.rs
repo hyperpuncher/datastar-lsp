@@ -109,6 +109,8 @@ pub fn generate(
             line_index,
             &mut diagnostics,
         );
+        check_modifier_conflicts(attr, line_index, &mut diagnostics);
+        check_expression_syntax(attr, line_index, &mut diagnostics);
         check_value_actions(attr, &action_registry, line_index, &mut diagnostics);
         check_value_signals(attr, line_index, &mut diagnostics, &defined_signals);
     }
@@ -435,6 +437,188 @@ fn push_modifier_diag(
     }
 }
 
+/// Conflicts between modifier groups (mutually exclusive).
+/// These are defined per-plugin: modifiers within a group cannot be used together.
+const MODIFIER_CONFLICTS: &[(&str, &[&[&str]])] = &[(
+    "scroll-into-view",
+    &[
+        &["smooth", "instant", "auto"],
+        &["hstart", "hcenter", "hend", "hnearest"],
+        &["vstart", "vcenter", "vend", "vnearest"],
+    ],
+)];
+
+/// Check for duplicate and conflicting modifiers on an attribute.
+fn check_modifier_conflicts(
+    attr: &crate::analysis::ts_util::AttrData,
+    line_index: &LineIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Duplicate modifiers
+    let mut seen = std::collections::BTreeMap::new();
+    for (mod_key, _tags) in &attr.modifiers {
+        if let Some(prev_pos) = seen.get(mod_key.as_str()) {
+            let range = byte_range_to_lsp_range(
+                line_index,
+                attr.name_start + prev_pos,
+                attr.name_start + prev_pos + 2 + mod_key.len(),
+            );
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("datastar".to_string()),
+                message: format!("Duplicate modifier: '__{mod_key}' appears more than once."),
+                ..Default::default()
+            });
+        }
+        if let Some(pos) = attr.raw_name.find(&format!("__{mod_key}")) {
+            seen.insert(mod_key.as_str(), pos);
+        }
+    }
+
+    // Conflicting modifier groups
+    for (plugin, groups) in MODIFIER_CONFLICTS {
+        if attr.plugin_name != *plugin {
+            continue;
+        }
+        for group in *groups {
+            let found: Vec<&str> = attr
+                .modifiers
+                .iter()
+                .filter(|(k, _)| group.contains(&k.as_str()))
+                .map(|(k, _)| k.as_str())
+                .collect();
+            if found.len() > 1 {
+                let first = found[0];
+                if let Some(pos) = attr.raw_name.find(&format!("__{first}")) {
+                    let range = byte_range_to_lsp_range(
+                        line_index,
+                        attr.name_start + pos,
+                        attr.name_start + pos + 2 + first.len(),
+                    );
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("datastar".to_string()),
+                        message: format!("Conflicting modifiers: {} (pick one).", found.join(", ")),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Check expression syntax: balanced delimiters, unterminated strings.
+fn check_expression_syntax(
+    attr: &crate::analysis::ts_util::AttrData,
+    line_index: &LineIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let value = match &attr.value {
+        Some(v) => v,
+        None => return,
+    };
+    if value.trim().is_empty() {
+        return;
+    }
+
+    let bytes = value.as_bytes();
+    let mut stack: Vec<(u8, usize)> = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        // String literals
+        if c == b'"' || c == b'\'' || c == b'`' {
+            let quote = c;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == quote {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            if i >= bytes.len() {
+                let vs = attr.value_start.unwrap_or(0);
+                let range = byte_range_to_lsp_range(line_index, vs, vs + value.len());
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("datastar".to_string()),
+                    message: format!("Unterminated string (opened with '{}').", quote as char),
+                    ..Default::default()
+                });
+                return;
+            }
+            continue;
+        }
+
+        // Opening delimiters
+        if c == b'(' || c == b'[' || c == b'{' {
+            stack.push((c, i));
+            i += 1;
+            continue;
+        }
+
+        // Closing delimiters
+        let expected = match c {
+            b')' => b'(',
+            b']' => b'[',
+            b'}' => b'{',
+            _ => 0,
+        };
+        if expected != 0 {
+            if stack.is_empty() || stack.last().unwrap().0 != expected {
+                let vs = attr.value_start.unwrap_or(0);
+                let pos = vs + i;
+                let range = byte_range_to_lsp_range(line_index, pos, pos + 1);
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("datastar".to_string()),
+                    message: format!(
+                        "Unexpected '{}' without matching '{}'.",
+                        c as char, expected as char
+                    ),
+                    ..Default::default()
+                });
+                return;
+            }
+            stack.pop();
+        }
+
+        i += 1;
+    }
+
+    // Unclosed delimiters
+    if let Some((open, _pos)) = stack.last() {
+        let close = match open {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            _ => b'?',
+        };
+        let vs = attr.value_start.unwrap_or(0);
+        let range = byte_range_to_lsp_range(line_index, vs, vs + value.len());
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("datastar".to_string()),
+            message: format!(
+                "Unclosed '{}' — expected matching '{}'.",
+                *open as char, close as char
+            ),
+            ..Default::default()
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +653,48 @@ mod tests {
     fn test_valid_clean() {
         let diags = diags_for(r#"<div data-signals:foo="1" data-text="$foo"></div>"#);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_modifier() {
+        let html = r#"<div data-on:click__debounce__debounce="$x"></div>"#;
+        let diags = diags_for(html);
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("Duplicate modifier")));
+    }
+
+    #[test]
+    fn test_conflicting_modifiers() {
+        let html = r#"<div data-scroll-into-view__smooth__instant></div>"#;
+        let diags = diags_for(html);
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("Conflicting modifiers")));
+    }
+
+    #[test]
+    fn test_unclosed_paren() {
+        let html = r#"<div data-text="$foo + ($bar"></div>"#;
+        let diags = diags_for(html);
+        assert!(diags.iter().any(|d| d.message.contains("Unclosed")));
+    }
+
+    #[test]
+    fn test_unterminated_string() {
+        let html = r#"<div data-text='$foo + "hello'></div>"#;
+        let diags = diags_for(html);
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("Unterminated string")));
+    }
+
+    #[test]
+    fn test_balanced_expression_clean() {
+        let html = r#"<div data-text="$foo + ($bar ? 'yes' : 'no')"></div>"#;
+        let diags = diags_for(html);
+        assert!(!diags.iter().any(|d| d.message.contains("Unclosed")
+            || d.message.contains("Unterminated")
+            || d.message.contains("Unexpected")));
     }
 }

@@ -1,6 +1,7 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
 use crate::analysis::cursor::{self, CursorPosition};
+use crate::analysis::examples;
 use crate::analysis::signal_util;
 use crate::analysis::ts_util;
 use crate::data::{actions, attributes};
@@ -82,6 +83,9 @@ fn hover_plugin(plugin_name: &str, attrs: &[crate::analysis::ts_util::AttrData])
     }
 
     content.push_str(&format!("\n\n[Documentation]({})", def.doc_url));
+
+    // Append curated examples
+    content.push_str(&examples::format_markdown(plugin_name));
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {

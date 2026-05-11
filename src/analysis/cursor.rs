@@ -51,7 +51,7 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
     // Check if cursor is in the attribute name
     if offset >= name_start && offset <= name_node.end_byte() {
         if let Some(colon_pos) = name_text.find(':') {
-            if offset > name_start + colon_pos {
+            if offset >= name_start + colon_pos {
                 return after_colon(name_text);
             }
         }
@@ -294,5 +294,12 @@ mod tests {
         let tree = parser.parse(text, None).unwrap();
         let pos = detect(tree.root_node(), text, 10);
         assert!(matches!(pos, CursorPosition::None));
+    }
+
+    #[test]
+    fn test_after_colon_empty_key() {
+        let pos = detect_at(r#"<div data-on:></div>"#, 12);
+        eprintln!("detect = {:?}", pos);
+        assert!(matches!(pos, CursorPosition::AfterColon { .. }));
     }
 }

@@ -7,7 +7,7 @@ use crate::line_index::LineIndex;
 use crate::util::byte_range_to_lsp_range;
 
 /// Common HTML DOM events used with `data-on:`.
-const KNOWN_DOM_EVENTS: &[&str] = &[
+pub const KNOWN_DOM_EVENTS: &[&str] = &[
     // Mouse events
     "click",
     "dblclick",
@@ -534,17 +534,19 @@ fn check_expression_syntax(
         if c == b'"' || c == b'\'' || c == b'`' {
             let quote = c;
             i += 1;
+            let mut closed = false;
             while i < bytes.len() {
                 if bytes[i] == b'\\' {
                     i += 2;
                 } else if bytes[i] == quote {
                     i += 1;
+                    closed = true;
                     break;
                 } else {
                     i += 1;
                 }
             }
-            if i >= bytes.len() {
+            if !closed {
                 let vs = attr.value_start.unwrap_or(0);
                 let range = byte_range_to_lsp_range(line_index, vs, vs + value.len());
                 diagnostics.push(Diagnostic {

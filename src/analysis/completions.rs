@@ -3,6 +3,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::analysis::cursor::{self, CursorPosition};
+use crate::analysis::diagnostics::KNOWN_DOM_EVENTS;
 use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
 use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
@@ -30,21 +31,38 @@ pub fn generate(
         }
         CursorPosition::AfterColon {
             plugin_name,
-            key: _,
+            key,
         } => {
-            // Cursor is after the colon in data-plugin:key__modifier
-            // Complete modifiers for the plugin
             if let Some(def) = attributes::all().get(plugin_name.as_str()) {
-                // Find the attr data to get used modifiers
-                let used_mods = attrs
+                let matching_attr = attrs
                     .iter()
                     .find(|a| {
                         a.plugin_name == plugin_name
                             && a.name_start <= cursor_byte
                             && a.name_start + a.name_len >= cursor_byte
-                    })
-                    .map(|a| &a.modifiers);
-                items.extend(complete_modifiers(def, used_mods.unwrap_or(&Vec::new())));
+                    });
+
+                // Show modifiers if cursor is after __ in an existing key.
+                // Show key completions (events, etc.) if no key yet or cursor before __.
+                let show_modifiers = key.as_ref().is_some_and(|k| {
+                    !k.is_empty()
+                        && matching_attr.is_some_and(|a| {
+                            a.raw_name.contains("__")
+                                && cursor_byte
+                                    > a.name_start
+                                        + a.raw_name.find("__").unwrap_or(0)
+                        })
+                });
+
+                if show_modifiers {
+                    let used_mods = matching_attr.map(|a| &a.modifiers);
+                    items.extend(complete_modifiers(
+                        def,
+                        used_mods.unwrap_or(&Vec::new()),
+                    ));
+                } else {
+                    items.extend(complete_keys(&plugin_name));
+                }
             }
         }
         CursorPosition::AttributeValue {
@@ -198,6 +216,57 @@ fn complete_actions() -> Vec<CompletionItem> {
 
 fn complete_signals(attrs: &[AttrData]) -> Vec<CompletionItem> {
     complete_signals_filtered(attrs, None)
+}
+
+/// Complete keys for a plugin (e.g. event names for `data-on:`, CSS class names for `data-class:`).
+fn complete_keys(plugin_name: &str) -> Vec<CompletionItem> {
+    match plugin_name {
+        "on" => KNOWN_DOM_EVENTS
+            .iter()
+            .map(|event| CompletionItem {
+                label: event.to_string(),
+                kind: Some(CompletionItemKind::EVENT),
+                detail: Some("DOM event".to_string()),
+                insert_text: Some(format!("{event}=\"${{1:expression}}\"")),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            })
+            .collect(),
+        "bind" => vec![
+            key_item("value", "Input value binding"),
+            key_item("checked", "Checkbox/radio checked state"),
+        ],
+        "attr" => vec![
+            key_item("disabled", "Disable the element"),
+            key_item("href", "Link URL"),
+            key_item("src", "Image/source URL"),
+            key_item("class", "CSS class name"),
+            key_item("id", "Element ID"),
+            key_item("style", "Inline style"),
+            key_item("title", "Tooltip text"),
+            key_item("type", "Input type"),
+            key_item("placeholder", "Placeholder text"),
+            key_item("aria-label", "Accessibility label"),
+        ],
+        "class" => vec![
+            key_item("active", "Toggle active state"),
+            key_item("hidden", "Toggle visibility"),
+            key_item("disabled", "Toggle disabled appearance"),
+            key_item("loading", "Toggle loading state"),
+            key_item("error", "Toggle error state"),
+            key_item("selected", "Toggle selection"),
+        ],
+        _ => vec![],
+    }
+}
+
+fn key_item(name: &str, desc: &str) -> CompletionItem {
+    CompletionItem {
+        label: name.to_string(),
+        kind: Some(CompletionItemKind::ENUM_MEMBER),
+        detail: Some(desc.to_string()),
+        ..Default::default()
+    }
 }
 
 fn complete_evt_props(attrs: &[AttrData]) -> Vec<CompletionItem> {
@@ -360,6 +429,21 @@ mod tests {
         assert!(
             items.iter().any(|i| i.label == "@get"),
             "should suggest @get, got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_complete_event_keys() {
+        let html = r#"<button data-on:></button>"#;
+        let uri = Url::parse("file:///test.html").unwrap();
+        let li = LineIndex::new(html.to_string());
+        // `<button data-on:></button>` — colon at byte 15
+        let (line, col) = li.byte_to_position(15);
+        let items = generate(&li, html, Position { line, character: col }, &uri);
+        assert!(
+            items.iter().any(|i| i.label == "click"),
+            "should suggest event names, got: {:?}",
             items.iter().map(|i| &i.label).collect::<Vec<_>>()
         );
     }

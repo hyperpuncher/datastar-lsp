@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use tower_lsp::lsp_types::{Position, TextEdit, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS, DEFINER_PREFIXES};
+use crate::analysis::cursor::{self, CursorPosition};
+use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
@@ -21,10 +22,10 @@ pub fn rename_signal(
 
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    let (_, attrs) = ts_util::parse_and_collect(text, uri)?;
+    let (tree, attrs) = ts_util::parse_and_collect(text, uri)?;
 
     let old_name = signal_util::find_signal_at_cursor(&attrs, offset)
-        .or_else(|| find_def_name_at(text, offset))?;
+        .or_else(|| def_name_from_cursor(tree.root_node(), text, offset))?;
     let top = old_name.split('.').next().unwrap_or("");
 
     if !signal_util::is_defined(top, &attrs, project_index) {
@@ -120,31 +121,32 @@ pub fn rename_signal(
     Some(changes)
 }
 
-fn find_def_name_at(text: &str, offset: usize) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut i = offset as isize;
-    while i > 0 {
-        if bytes[i as usize] == b':' {
-            let before = std::str::from_utf8(&bytes[..i as usize]).ok()?;
-            let is_definer = DEFINER_PREFIXES
-                .iter()
-                .any(|p| before.ends_with(&p[0..p.len() - 1]));
-            if is_definer {
-                let after = &bytes[i as usize + 1..];
-                let end = after
-                    .iter()
-                    .position(|b| !b.is_ascii_alphanumeric() && *b != b'-' && *b != b'_')
-                    .unwrap_or(after.len());
-                let name = std::str::from_utf8(&after[..end]).unwrap_or("");
-                if !name.is_empty() {
-                    return Some(name.to_string());
+fn def_name_from_cursor(root: tree_sitter::Node, text: &str, offset: usize) -> Option<String> {
+    match cursor::detect(root, text, offset) {
+        CursorPosition::AfterColon { key, .. } => key,
+        CursorPosition::AttributeName { .. } => {
+            // Cursor is on "data-signals:name" — find the : manually
+            let bytes = text.as_bytes();
+            let mut i = offset as isize;
+            while i >= 0 {
+                if bytes.get(i as usize) == Some(&b':') {
+                    let after = &bytes[i as usize + 1..];
+                    let end = after
+                        .iter()
+                        .position(|b| !b.is_ascii_alphanumeric() && *b != b'-' && *b != b'_')
+                        .unwrap_or(after.len());
+                    let name = std::str::from_utf8(&after[..end]).unwrap_or("");
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                    break;
                 }
+                i -= 1;
             }
-            return None;
+            None
         }
-        i -= 1;
+        _ => None,
     }
-    None
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
+use crate::analysis::cursor::{self, CursorPosition};
 use crate::analysis::signal_util;
 use crate::analysis::ts_util;
 use crate::data::{actions, attributes};
@@ -13,39 +14,45 @@ pub fn generate(
 ) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
-    let (_, attrs) = ts_util::parse_and_collect(text, uri)?;
+    let (tree, attrs) = ts_util::parse_and_collect(text, uri)?;
 
-    for attr in &attrs {
-        if offset >= attr.name_start && offset <= attr.name_start + attr.name_len {
-            return hover_attribute_node(attr);
-        }
-        if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
-            let value_end = value_start + value.len();
-            if offset >= value_start && offset <= value_end {
-                let rel = offset.saturating_sub(value_start);
-                if rel < value.len() {
-                    return hover_value_text(value, rel, &attrs);
-                }
+    match cursor::detect(tree.root_node(), text, offset) {
+        CursorPosition::AttributeName { plugin_name } => hover_plugin(&plugin_name, &attrs),
+        CursorPosition::AfterColon { plugin_name, .. } => hover_plugin(&plugin_name, &attrs),
+        CursorPosition::AttributeValue {
+            value_start,
+            full_value,
+            ..
+        } => {
+            let rel = offset.saturating_sub(value_start);
+            if rel < full_value.len() {
+                hover_value_text(&full_value, rel, &attrs)
+            } else {
+                None
             }
         }
+        _ => None,
     }
-
-    None
 }
 
-fn hover_attribute_node(attr: &crate::analysis::ts_util::AttrData) -> Option<Hover> {
+fn hover_plugin(plugin_name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Option<Hover> {
     let registry = attributes::all();
-    let def = registry.get(attr.plugin_name.as_str())?;
+    let def = registry.get(plugin_name)?;
 
-    let mut content = format!("## `data-{}`\n\n{}", attr.plugin_name, def.description);
+    let attr = attrs.iter().find(|a| a.plugin_name == plugin_name);
 
-    if let Some(key) = &attr.key {
+    let mut content = format!("## `data-{}`\n\n{}", plugin_name, def.description);
+
+    if let Some(key) = attr.and_then(|a| a.key.as_ref()) {
         content.push_str(&format!("\n\n**Key:** `{key}`"));
     }
 
-    if !attr.modifiers.is_empty() {
+    if let Some(mods) = attr
+        .filter(|a| !a.modifiers.is_empty())
+        .map(|a| &a.modifiers)
+    {
         content.push_str("\n\n**Modifiers:**");
-        for (mod_key, tags) in &attr.modifiers {
+        for (mod_key, tags) in mods {
             if tags.is_empty() {
                 content.push_str(&format!("\n- `__{mod_key}`"));
             } else {
@@ -95,18 +102,15 @@ fn hover_value_text(
         return None;
     }
 
-    // Direct $ hit: read signal name immediately
     if bytes[rel] == b'$' {
         return signal_util::read_signal_name(&value[rel + 1..])
             .and_then(|n| hover_signal(&n, attrs));
     }
 
-    // Direct @ hit: read action name
     if bytes[rel] == b'@' {
         return hover_action_name(value, rel);
     }
 
-    // Alpha-ish char: backtrack to find leading $ or @
     if bytes[rel].is_ascii_alphanumeric()
         || bytes[rel] == b'_'
         || bytes[rel] == b'-'
@@ -138,8 +142,8 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
 
     if top == "evt" {
         return mk_hover(
-            "## `$evt`\n\nBuilt-in signal: the current event object.\n\nAvailable in `data-on:*` expressions.",
-        );
+			"## `$evt`\n\nBuilt-in signal: the current event object.\n\nAvailable in `data-on:*` expressions.",
+		);
     }
     if top == "el" {
         return mk_hover(
@@ -151,9 +155,9 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
         mk_hover(&format!("## `${name}`\n\nSignal defined in this document."))
     } else {
         mk_hover(&format!(
-            "## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
-            name = name
-        ))
+			"## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
+			name = name
+		))
     }
 }
 

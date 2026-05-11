@@ -2,6 +2,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, Position, Url,
 };
 
+use crate::analysis::cursor::{self, CursorPosition};
 use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
 use crate::analysis::ts_util::{self, AttrData};
 use crate::data::{actions, attributes};
@@ -20,91 +21,97 @@ pub fn generate(
         return vec![];
     };
 
-    if let Some(attr) = ts_util::find_attr_at_cursor(&attrs, cursor_byte) {
-        // In attribute name
-        if cursor_byte >= attr.name_start && cursor_byte <= attr.name_start + attr.name_len {
-            if let Some(colon_pos) = attr.raw_name.find(':') {
-                let colon_offset = attr.name_start + colon_pos;
-                if cursor_byte > colon_offset {
-                    if let Some(def) = attributes::all().get(attr.plugin_name.as_str()) {
-                        items.extend(complete_modifiers(def, &attr.modifiers));
-                    }
-                    return deduplicate_and_sort(items);
-                }
-            }
+    let ctx = cursor::detect(tree.root_node(), text, cursor_byte);
+
+    match ctx {
+        CursorPosition::AttributeName { plugin_name: _ } => {
+            // Cursor is inside a data-* attribute name — complete attribute names
             items.extend(complete_attribute_names(&attrs));
-            return deduplicate_and_sort(items);
         }
-
-        // In attribute value
-        if let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) {
-            let value_end = value_start + value.len();
-            if cursor_byte >= value_start && cursor_byte <= value_end {
-                let rel = cursor_byte.saturating_sub(value_start);
-                if rel > 0 && rel <= value.len() {
-                    let before = &value[..rel.min(value.len())];
-                    if before.ends_with('$') || before.ends_with("$.") {
-                        items.extend(complete_signals(&attrs));
-                    } else if before.ends_with('@') {
-                        items.extend(complete_actions());
-                    } else if let Some(pos) = before.rfind('$') {
-                        let after_dollar = &before[pos + 1..];
-                        if !after_dollar.contains(' ') && !after_dollar.contains('"') {
-                            let prefix = if after_dollar.contains('.') {
-                                after_dollar.split('.').next_back()
-                            } else {
-                                Some(after_dollar)
-                            };
-                            items.extend(complete_signals_filtered(&attrs, prefix));
-                        }
-                    } else if let Some(pos) = before.rfind('@') {
-                        let after = &before[pos + 1..];
-                        if !after.contains(' ') && !after.contains('(') {
-                            items.extend(complete_actions());
-                        }
-                    }
-                }
-                if rel == 0 {
-                    if value.starts_with('@') {
-                        items.extend(complete_actions());
-                    } else if value.starts_with('$') {
-                        items.extend(complete_signals(&attrs));
-                    }
-                }
-                return deduplicate_and_sort(items);
+        CursorPosition::AfterColon {
+            plugin_name,
+            key: _,
+        } => {
+            // Cursor is after the colon in data-plugin:key__modifier
+            // Complete modifiers for the plugin
+            if let Some(def) = attributes::all().get(plugin_name.as_str()) {
+                // Find the attr data to get used modifiers
+                let used_mods = attrs
+                    .iter()
+                    .find(|a| {
+                        a.plugin_name == plugin_name
+                            && a.name_start <= cursor_byte
+                            && a.name_start + a.name_len >= cursor_byte
+                    })
+                    .map(|a| &a.modifiers);
+                items.extend(complete_modifiers(def, used_mods.unwrap_or(&Vec::new())));
             }
         }
+        CursorPosition::AttributeValue {
+            value_start,
+            full_value,
+            ..
+        } => {
+            // Cursor is inside a data-* attribute value
+            value_completions(&mut items, &attrs, cursor_byte, value_start, &full_value);
+        }
+        CursorPosition::InMarkup => {
+            // Cursor is in markup but not inside a data-* attr — offer attribute names
+            items.extend(complete_attribute_names(&attrs));
+        }
+        CursorPosition::None => {
+            // Not in a Datastar context — no completions
+        }
     }
 
-    // Only offer data-* completions inside JSX/HTML markup
-    if is_in_jsx_context(&tree, cursor_byte) {
-        items.extend(complete_attribute_names(&attrs));
-    }
     deduplicate_and_sort(items)
 }
 
-/// Check if a byte offset is inside a JSX/HTML context in the tree.
-fn is_in_jsx_context(tree: &tree_sitter::Tree, offset: usize) -> bool {
-    is_inside_jsx_recursive(tree.root_node(), offset)
-}
+/// Determine value completions based on what precedes the cursor in the value.
+fn value_completions(
+    items: &mut Vec<CompletionItem>,
+    attrs: &[AttrData],
+    cursor_byte: usize,
+    value_start: usize,
+    full_value: &str,
+) {
+    if cursor_byte <= value_start {
+        // Cursor at or before value start — show based on first char
+        if full_value.starts_with('@') {
+            items.extend(complete_actions());
+        } else if full_value.starts_with('$') {
+            items.extend(complete_signals(attrs));
+        }
+        return;
+    }
 
-fn is_inside_jsx_recursive(node: tree_sitter::Node, offset: usize) -> bool {
-    if node.start_byte() > offset || node.end_byte() < offset {
-        return false;
+    let rel = cursor_byte.saturating_sub(value_start);
+    if rel == 0 || rel > full_value.len() {
+        return;
     }
-    let kind = node.kind();
-    // JSX elements and attributes are valid Datastar contexts
-    if kind.starts_with("jsx_") || kind == "attribute" {
-        return true;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if is_inside_jsx_recursive(child, offset) {
-                return true;
-            }
+
+    let before = &full_value[..rel.min(full_value.len())];
+
+    if before.ends_with('$') || before.ends_with("$.") {
+        items.extend(complete_signals(attrs));
+    } else if before.ends_with('@') {
+        items.extend(complete_actions());
+    } else if let Some(pos) = before.rfind('$') {
+        let after_dollar = &before[pos + 1..];
+        if !after_dollar.contains(' ') && !after_dollar.contains('"') {
+            let prefix = if after_dollar.contains('.') {
+                after_dollar.split('.').next_back()
+            } else {
+                Some(after_dollar)
+            };
+            items.extend(complete_signals_filtered(attrs, prefix));
+        }
+    } else if let Some(pos) = before.rfind('@') {
+        let after = &before[pos + 1..];
+        if !after.contains(' ') && !after.contains('(') {
+            items.extend(complete_actions());
         }
     }
-    false
 }
 
 fn complete_attribute_names(existing: &[AttrData]) -> Vec<CompletionItem> {

@@ -22,17 +22,6 @@ pub fn language_for(uri: &tower_lsp::lsp_types::Url) -> tree_sitter::Language {
     }
 }
 
-/// Find which attribute (by byte range) contains the given offset.
-pub fn find_attr_at_cursor(attrs: &[AttrData], offset: usize) -> Option<&AttrData> {
-    attrs.iter().find(|a| {
-        (offset >= a.name_start && offset <= a.name_start + a.name_len)
-            || a.value_start.is_some_and(|vs| {
-                let ve = vs + a.value.as_ref().map(|v| v.len()).unwrap_or(0);
-                offset >= vs && offset <= ve
-            })
-    })
-}
-
 /// Full parse + collect: create parser, set language, parse text, collect attrs.
 pub fn parse_and_collect(
     text: &str,

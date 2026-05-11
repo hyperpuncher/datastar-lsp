@@ -2,6 +2,7 @@ pub mod code_actions;
 pub mod completions;
 pub mod cursor;
 pub mod diagnostics;
+pub mod events;
 pub mod examples;
 pub mod goto_def;
 pub mod hover;

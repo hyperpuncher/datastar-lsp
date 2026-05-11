@@ -92,6 +92,19 @@ fn value_completions(
 
     let before = &full_value[..rel.min(full_value.len())];
 
+    // evt. property completions — type-narrowed by event key
+    if before.ends_with("evt.") || before.ends_with("evt") {
+        items.extend(complete_evt_props(attrs));
+        return;
+    }
+    if let Some(pos) = before.rfind("evt.") {
+        let prefix = &before[pos + 4..];
+        if !prefix.contains(' ') && !prefix.contains(')') {
+            items.extend(complete_evt_props_filtered(attrs, Some(prefix)));
+            return;
+        }
+    }
+
     if before.ends_with('$') || before.ends_with("$.") {
         items.extend(complete_signals(attrs));
     } else if before.ends_with('@') {
@@ -185,6 +198,33 @@ fn complete_actions() -> Vec<CompletionItem> {
 
 fn complete_signals(attrs: &[AttrData]) -> Vec<CompletionItem> {
     complete_signals_filtered(attrs, None)
+}
+
+fn complete_evt_props(attrs: &[AttrData]) -> Vec<CompletionItem> {
+    complete_evt_props_filtered(attrs, None)
+}
+
+fn complete_evt_props_filtered(attrs: &[AttrData], prefix: Option<&str>) -> Vec<CompletionItem> {
+    let event_key = attrs
+        .iter()
+        .find(|a| a.plugin_name == "on")
+        .and_then(|a| a.key.as_deref());
+
+    crate::analysis::events::properties_for(event_key.unwrap_or("click"))
+        .into_iter()
+        .filter(|p| {
+            prefix.is_none_or(|pf| {
+                p.name.to_lowercase().starts_with(&pf.to_lowercase()) && p.name.len() > pf.len()
+            })
+        })
+        .map(|p| CompletionItem {
+            label: format!("evt.{}", p.name),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some(p.desc.to_string()),
+            insert_text: Some(p.name.to_string()),
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn complete_signals_filtered(attrs: &[AttrData], prefix: Option<&str>) -> Vec<CompletionItem> {

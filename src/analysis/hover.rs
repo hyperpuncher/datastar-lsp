@@ -273,4 +273,16 @@ mod tests {
             assert!(!v.contains("Undefined"), "should be defined, got: {v}");
         }
     }
+
+    #[test]
+    fn test_hover_bind_value_defines_signal() {
+        // data-bind="percentage" (value-based) should define $percentage
+        let html = r#"<input data-bind="percentage" /><button data-on:click="$percentage = 50">Set</button>"#;
+        let h = hover_at(html, "$percentage").expect("hover for $percentage");
+        let v = match &h.contents {
+            HoverContents::Markup(m) => &m.value,
+            _ => panic!("expected markup"),
+        };
+        assert!(!v.contains("Undefined"), "should be defined, got: {v}");
+    }
 }

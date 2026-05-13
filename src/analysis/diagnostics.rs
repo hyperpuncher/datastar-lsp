@@ -98,7 +98,9 @@ pub fn generate(
     let defined_signals: std::collections::BTreeSet<String> = attrs
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
-        .filter_map(|a| a.key.clone())
+        .flat_map(|a| {
+            signal_util::signal_names_from_attr(a)
+        })
         .collect();
 
     for attr in &attrs {
@@ -112,19 +114,16 @@ pub fn generate(
         check_modifier_conflicts(attr, line_index, &mut diagnostics);
         check_expression_syntax(attr, line_index, &mut diagnostics);
         check_value_actions(attr, &action_registry, line_index, &mut diagnostics);
-        check_value_signals(attr, line_index, &mut diagnostics, &defined_signals);
     }
 
-    // Cross-file signal check
-    if project_index.is_some() {
+    // Signal checks: emit once (either local-only or with cross-file fallback)
+    if let Some(index) = project_index {
         for attr in &attrs {
-            emit_undefined_signals(
-                attr,
-                line_index,
-                &mut diagnostics,
-                &defined_signals,
-                project_index,
-            );
+            emit_undefined_signals(attr, line_index, &mut diagnostics, &defined_signals, Some(index));
+        }
+    } else {
+        for attr in &attrs {
+            emit_undefined_signals(attr, line_index, &mut diagnostics, &defined_signals, None);
         }
     }
 
@@ -342,15 +341,6 @@ fn check_value_actions(
             ..Default::default()
         });
     }
-}
-
-fn check_value_signals(
-    attr: &crate::analysis::ts_util::AttrData,
-    line_index: &LineIndex,
-    diagnostics: &mut Vec<Diagnostic>,
-    defined: &std::collections::BTreeSet<String>,
-) {
-    emit_undefined_signals(attr, line_index, diagnostics, defined, None);
 }
 
 /// Scan a value for `$signal` references and emit diagnostics for undefined signals.
@@ -692,5 +682,20 @@ mod tests {
         assert!(!diags.iter().any(|d| d.message.contains("Unclosed")
             || d.message.contains("Unterminated")
             || d.message.contains("Unexpected")));
+    }
+
+    #[test]
+    fn test_bind_value_defines_signal() {
+        let html = r#"<input data-bind="percentage" /><button data-on:click="$percentage = 50">Set</button>"#;
+        let diags = diags_for(html);
+        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$percentage'")));
+    }
+
+    #[test]
+    fn test_signals_object_defines_signals() {
+        let html = r#"<div data-signals="{percentage: 0, contents: 'hello'}" data-effect="$percentage = $contents.toUpperCase()"></div>"#;
+        let diags = diags_for(html);
+        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$percentage'")));
+        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$contents'")));
     }
 }

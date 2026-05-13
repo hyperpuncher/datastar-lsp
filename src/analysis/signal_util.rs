@@ -64,10 +64,105 @@ pub fn is_defined(
     attrs
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
-        .any(|a| a.key.as_deref() == Some(top))
+        .any(|a| signal_names_from_attr(a).contains(&top.to_string()))
         || project_index
             .as_ref()
             .is_some_and(|idx| index_find_def(idx, top))
+}
+
+/// Extract all signal names that an attribute defines.
+/// Handles key-based (data-bind:foo), value-based (data-bind="foo"),
+/// and object-literal-based (data-signals="{foo: 1, bar: 2}").
+pub fn signal_names_from_attr(attr: &AttrData) -> Vec<String> {
+    let mut names = Vec::new();
+
+    // Key-based: data-bind:foo → signal is "foo"
+    if let Some(ref k) = attr.key {
+        names.push(k.clone());
+        return names;
+    }
+
+    let Some(ref value) = attr.value else {
+        return names;
+    };
+
+    let trimmed = value.trim();
+
+    // Object literal: data-signals="{foo: 1, bar: 2}"
+    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with("{\"") && trimmed.ends_with("\"}"))
+    {
+        let inner = if trimmed.starts_with("{\"") {
+            &trimmed[2..trimmed.len() - 2]
+        } else {
+            &trimmed[1..trimmed.len() - 1]
+        };
+        for part in split_obj_keys(inner) {
+            let name = part.trim();
+            if !name.is_empty() && is_valid_signal_name(name) {
+                names.push(name.to_string());
+            }
+        }
+        return names;
+    }
+
+    // Simple value: data-bind="foo", data-ref="bar"
+    if !trimmed.is_empty() && is_valid_signal_name(trimmed) {
+        names.push(trimmed.to_string());
+    }
+
+    names
+}
+
+/// Split object literal content on top-level commas,
+/// extracting key names before `:`.
+fn split_obj_keys(content: &str) -> Vec<&str> {
+    let mut keys = Vec::new();
+    let mut depth = 0u32;
+    let mut last = 0;
+    for (i, c) in content.char_indices() {
+        match c {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let part = content[last..i].trim();
+                if let Some(key) = extract_key(part) {
+                    keys.push(key);
+                }
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let part = content[last..].trim();
+    if let Some(key) = extract_key(part) {
+        keys.push(key);
+    }
+    keys
+}
+
+/// Extract the key name before `:` in an object entry.
+/// Handles quoted keys: `'foo-bar'`, `"fooBar"`, and bare keys: `foo`.
+fn extract_key(part: &str) -> Option<&str> {
+    let part = part.trim();
+    if part.is_empty() {
+        return None;
+    }
+    // Quoted key
+    if part.starts_with('"') || part.starts_with('\'') {
+        let quote = part.chars().next()?;
+        let key = &part[1..];
+        let end = key.find(quote)?;
+        return Some(key[..end].trim());
+    }
+    // Bare key: before `:`
+    let end = part.find(':').unwrap_or(part.len());
+    let key = part[..end].trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
 }
 
 /// Check if a signal name is found in cross-file index text.
@@ -92,6 +187,7 @@ pub fn is_valid_signal_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::ts_util::AttrData;
 
     #[test]
     fn test_is_valid_signal_name() {
@@ -100,5 +196,69 @@ mod tests {
         assert!(is_valid_signal_name("my_signal"));
         assert!(!is_valid_signal_name(""));
         assert!(!is_valid_signal_name("my name"));
+    }
+
+    #[test]
+    fn test_signal_names_from_attr_key_based() {
+        let attr = AttrData {
+            raw_name: "data-bind:foo".into(),
+            plugin_name: "bind".into(),
+            key: Some("foo".into()),
+            name_start: 0, name_len: 0,
+            value: None, value_start: None,
+            modifiers: vec![],
+            has_trailing_colon: false,
+        };
+        assert_eq!(signal_names_from_attr(&attr), vec!["foo"]);
+    }
+
+    #[test]
+    fn test_signal_names_from_attr_value_based() {
+        let attr = AttrData {
+            raw_name: "data-bind".into(),
+            plugin_name: "bind".into(),
+            key: None,
+            name_start: 0, name_len: 0,
+            value: Some("percentage".into()), value_start: None,
+            modifiers: vec![],
+            has_trailing_colon: false,
+        };
+        assert_eq!(signal_names_from_attr(&attr), vec!["percentage"]);
+    }
+
+    #[test]
+    fn test_signal_names_from_obj_literal() {
+        let attr = AttrData {
+            raw_name: "data-signals".into(),
+            plugin_name: "signals".into(),
+            key: None,
+            name_start: 0, name_len: 0,
+            value: Some("{percentage: 0, contents: 'hello', foo: 'bar'}".into()),
+            value_start: None,
+            modifiers: vec![],
+            has_trailing_colon: false,
+        };
+        let mut names = signal_names_from_attr(&attr);
+        names.sort();
+        assert_eq!(names, vec!["contents", "foo", "percentage"]);
+    }
+
+    #[test]
+    fn test_signal_names_from_quoted_obj_literal() {
+        // Values are already unquoted by the extractor,
+        // so this represents `data-signals="{percentage: 0, contents: 'hello'}"`
+        let attr = AttrData {
+            raw_name: "data-signals".into(),
+            plugin_name: "signals".into(),
+            key: None,
+            name_start: 0, name_len: 0,
+            value: Some("{percentage: 0, contents: 'hello'}".into()),
+            value_start: None,
+            modifiers: vec![],
+            has_trailing_colon: false,
+        };
+        let mut names = signal_names_from_attr(&attr);
+        names.sort();
+        assert_eq!(names, vec!["contents", "percentage"]);
     }
 }

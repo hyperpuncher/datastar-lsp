@@ -175,48 +175,48 @@ fn attr_name_child(attr: Node) -> Option<Node> {
 
 /// Find the attribute node containing `offset`, or None if not in an attribute.
 fn find_attr_node(root: Node, offset: usize) -> Option<Node> {
-	let mut node = root;
-	loop {
-		if node.start_byte() > offset || node.end_byte() < offset {
-			return None;
-		}
-		if node.kind() == "attribute" || node.kind() == "jsx_attribute" {
-			return Some(node);
-		}
-		let mut found = false;
-		for i in 0..node.child_count() {
-			if let Some(child) = node.child(i as u32) {
-				if child.start_byte() <= offset && child.end_byte() >= offset {
-					node = child;
-					found = true;
-					break;
-				}
-			}
-		}
-		if !found {
-			// TSX edge case: cursor on bare ":" after data-on (ERROR sibling, not in attr).
-			// Walk up from the leaf to find a parent with a jsx_attribute child.
-			if node.kind() == ":" || node.kind() == "ERROR" {
-				let mut parent = node.parent();
-				while let Some(p) = parent {
-					if p.kind() == "jsx_opening_element" || p.kind() == "start_tag" {
-						for i in 0..p.child_count() {
-							if let Some(sib) = p.child(i as u32) {
-								if (sib.kind() == "jsx_attribute" || sib.kind() == "attribute")
-									&& sib.end_byte() <= offset
-								{
-									return Some(sib);
-								}
-							}
-						}
-						return None;
-					}
-					parent = p.parent();
-				}
-			}
-			return None;
-		}
-	}
+    let mut node = root;
+    loop {
+        if node.start_byte() > offset || node.end_byte() < offset {
+            return None;
+        }
+        if node.kind() == "attribute" || node.kind() == "jsx_attribute" {
+            return Some(node);
+        }
+        let mut found = false;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i as u32) {
+                if child.start_byte() <= offset && child.end_byte() >= offset {
+                    node = child;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            // TSX edge case: cursor on bare ":" after data-on (ERROR sibling, not in attr).
+            // Walk up from the leaf to find a parent with a jsx_attribute child.
+            if node.kind() == ":" || node.kind() == "ERROR" {
+                let mut parent = node.parent();
+                while let Some(p) = parent {
+                    if p.kind() == "jsx_opening_element" || p.kind() == "start_tag" {
+                        for i in 0..p.child_count() {
+                            if let Some(sib) = p.child(i as u32) {
+                                if (sib.kind() == "jsx_attribute" || sib.kind() == "attribute")
+                                    && sib.end_byte() <= offset
+                                {
+                                    return Some(sib);
+                                }
+                            }
+                        }
+                        return None;
+                    }
+                    parent = p.parent();
+                }
+            }
+            return None;
+        }
+    }
 }
 
 fn is_in_markup(root: Node, offset: usize) -> bool {

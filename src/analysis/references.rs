@@ -104,8 +104,14 @@ pub fn find_references(
                 locations.push(Location {
                     uri: cross_uri.clone(),
                     range: Range {
-                        start: Position { line, character: col },
-                        end: Position { line, character: col + dollar.len() as u32 },
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col + dollar.len() as u32,
+                        },
                     },
                 });
             }

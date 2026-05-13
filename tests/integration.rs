@@ -128,19 +128,29 @@ use tower_lsp::lsp_types::{Position, Url};
 /// Helper: get completions with cursor placed at the END of the pattern match.
 fn complete_after(text: &str, uri: &str, pattern: &str) -> Vec<String> {
     let line_index = LineIndex::new(text.to_string());
-    let match_start = text.find(pattern).unwrap_or_else(|| panic!("pattern not found: {pattern}"));
+    let match_start = text
+        .find(pattern)
+        .unwrap_or_else(|| panic!("pattern not found: {pattern}"));
     let byte_offset = match_start + pattern.len();
     complete_at_byte(text, uri, &line_index, byte_offset)
 }
 
 /// Helper: get completions with cursor placed at a specific byte offset.
-fn complete_at_byte(text: &str, uri: &str, line_index: &LineIndex, byte_offset: usize) -> Vec<String> {
+fn complete_at_byte(
+    text: &str,
+    uri: &str,
+    line_index: &LineIndex,
+    byte_offset: usize,
+) -> Vec<String> {
     let (line, col) = line_index.byte_to_position(byte_offset);
     let url = Url::parse(uri).unwrap();
     let items = completions::generate(
         line_index,
         text,
-        Position { line, character: col },
+        Position {
+            line,
+            character: col,
+        },
         &url,
     );
     items.into_iter().map(|i| i.label).collect()
@@ -158,7 +168,10 @@ fn html_completion_after_data_hyphen() {
 fn html_completion_after_data_on_colon() {
     let html = r#"<button data-on:></button>"#;
     let labels = complete_after(html, "file:///test.html", "data-on:");
-    assert!(labels.contains(&"click".to_string()), "expected event names, got: {labels:?}");
+    assert!(
+        labels.contains(&"click".to_string()),
+        "expected event names, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -167,7 +180,10 @@ fn html_completion_modifiers_after_underscore() {
     let idx = html.find("click__").unwrap() + "click__".len();
     let li = LineIndex::new(html.to_string());
     let labels = complete_at_byte(html, "file:///test.html", &li, idx);
-    assert!(labels.contains(&"__debounce".to_string()), "should have modifiers, got: {labels:?}");
+    assert!(
+        labels.contains(&"__debounce".to_string()),
+        "should have modifiers, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -181,7 +197,10 @@ fn html_completion_in_value_dollar() {
 fn html_no_completion_outside_markup() {
     let html = r#"<script>var x = data-</script>"#;
     let labels = complete_after(html, "file:///test.html", "data-");
-    assert!(!labels.iter().any(|l| l.starts_with("data-")), "should not complete in script, got: {labels:?}");
+    assert!(
+        !labels.iter().any(|l| l.starts_with("data-")),
+        "should not complete in script, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -195,10 +214,10 @@ fn tsx_completion_after_data_hyphen() {
 fn tsx_completion_after_data_on_colon() {
     let tsx = r#"export function T() { return <button data-on:></button> }"#;
     let labels = {
-    let li = LineIndex::new(tsx.to_string());
-    let colon = tsx.find("data-on:").unwrap() + 7;
-    complete_at_byte(tsx, "file:///test.tsx", &li, colon)
-};
+        let li = LineIndex::new(tsx.to_string());
+        let colon = tsx.find("data-on:").unwrap() + 7;
+        complete_at_byte(tsx, "file:///test.tsx", &li, colon)
+    };
     assert!(
         labels.contains(&"click".to_string()),
         "TSX data-on: should complete event names, got: {labels:?}"
@@ -209,7 +228,10 @@ fn tsx_completion_after_data_on_colon() {
 fn tsx_no_completion_in_plain_typescript() {
     let tsx = r#"export function T() { const x = data-; return <div></div> }"#;
     let labels = complete_after(tsx, "file:///test.tsx", "data-");
-    assert!(!labels.iter().any(|l| l.starts_with("data-")), "should not complete in TS code, got: {labels:?}");
+    assert!(
+        !labels.iter().any(|l| l.starts_with("data-")),
+        "should not complete in TS code, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -217,7 +239,10 @@ fn tsx_completion_evt_props_keydown() {
     let tsx = r#"export function T() { return <input data-on:keydown="evt." /> }"#;
     let labels = complete_after(tsx, "file:///test.tsx", "evt.");
     // KeyboardEvent should include 'key' property
-    assert!(labels.iter().any(|l| l == "evt.key"), "should have KeyboardEvent props, got: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l == "evt.key"),
+        "should have KeyboardEvent props, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -225,7 +250,10 @@ fn tsx_completion_evt_props_click() {
     let tsx = r#"export function T() { return <button data-on:click="evt."></button> }"#;
     let labels = complete_after(tsx, "file:///test.tsx", "evt.");
     // MouseEvent should include 'clientX'
-    assert!(labels.iter().any(|l| l == "evt.clientX"), "should have MouseEvent props, got: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l == "evt.clientX"),
+        "should have MouseEvent props, got: {labels:?}"
+    );
 }
 
 #[test]
@@ -234,6 +262,8 @@ fn tsx_completion_modifiers_after_underscore() {
     let idx = tsx.find("click__").unwrap() + "click__".len();
     let li = LineIndex::new(tsx.to_string());
     let labels = complete_at_byte(tsx, "file:///test.tsx", &li, idx);
-    assert!(labels.contains(&"__debounce".to_string()), "should have modifiers, got: {labels:?}");
+    assert!(
+        labels.contains(&"__debounce".to_string()),
+        "should have modifiers, got: {labels:?}"
+    );
 }
-

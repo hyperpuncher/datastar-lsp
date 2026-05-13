@@ -117,7 +117,8 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
     let parsed = parse_attribute_key(&name);
 
     // Detect TSX trailing colon: check if next sibling of the attribute node is `:` or ERROR `:`
-    let has_trailing_colon = node.next_sibling()
+    let has_trailing_colon = node
+        .next_sibling()
         .map(|sib| {
             let txt = sib.utf8_text(src).ok().unwrap_or("");
             txt == ":" || sib.kind() == "ERROR"

@@ -101,15 +101,16 @@ fn hover_value_text(
     rel: usize,
     attrs: &[crate::analysis::ts_util::AttrData],
 ) -> Option<Hover> {
-    use crate::analysis::value_scanner::{span_at, signal_at_cursor, SpanKind};
+    use crate::analysis::value_scanner::{signal_at_cursor, span_at, SpanKind};
 
     if let Some(span) = span_at(value, rel) {
         return match span.kind {
             SpanKind::DollarSignal => hover_signal(&span.name, attrs),
             SpanKind::AtAction => hover_action_name(&span.name),
-            SpanKind::EvtDotProp => {
-                mk_hover(&format!("## `evt.{}`\n\nEvent property on `$evt` object.", span.name))
-            }
+            SpanKind::EvtDotProp => mk_hover(&format!(
+                "## `evt.{}`\n\nEvent property on `$evt` object.",
+                span.name
+            )),
         };
     }
 

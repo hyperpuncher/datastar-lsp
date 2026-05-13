@@ -268,8 +268,14 @@ pub fn def_entry_to_location(
     Some(tower_lsp::lsp_types::Location {
         uri: url.clone(),
         range: tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position { line, character: col },
-            end: tower_lsp::lsp_types::Position { line, character: col + *len as u32 },
+            start: tower_lsp::lsp_types::Position {
+                line,
+                character: col,
+            },
+            end: tower_lsp::lsp_types::Position {
+                line,
+                character: col + *len as u32,
+            },
         },
     })
 }
@@ -302,8 +308,10 @@ mod tests {
             raw_name: "data-bind:foo".into(),
             plugin_name: "bind".into(),
             key: Some("foo".into()),
-            name_start: 0, name_len: 0,
-            value: None, value_start: None,
+            name_start: 0,
+            name_len: 0,
+            value: None,
+            value_start: None,
             modifiers: vec![],
             has_trailing_colon: false,
         };
@@ -316,8 +324,10 @@ mod tests {
             raw_name: "data-bind".into(),
             plugin_name: "bind".into(),
             key: None,
-            name_start: 0, name_len: 0,
-            value: Some("percentage".into()), value_start: None,
+            name_start: 0,
+            name_len: 0,
+            value: Some("percentage".into()),
+            value_start: None,
             modifiers: vec![],
             has_trailing_colon: false,
         };
@@ -330,7 +340,8 @@ mod tests {
             raw_name: "data-signals".into(),
             plugin_name: "signals".into(),
             key: None,
-            name_start: 0, name_len: 0,
+            name_start: 0,
+            name_len: 0,
             value: Some("{percentage: 0, contents: 'hello', foo: 'bar'}".into()),
             value_start: None,
             modifiers: vec![],
@@ -349,7 +360,8 @@ mod tests {
             raw_name: "data-signals".into(),
             plugin_name: "signals".into(),
             key: None,
-            name_start: 0, name_len: 0,
+            name_start: 0,
+            name_len: 0,
             value: Some("{percentage: 0, contents: 'hello'}".into()),
             value_start: None,
             modifiers: vec![],

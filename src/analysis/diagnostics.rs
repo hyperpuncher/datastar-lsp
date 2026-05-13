@@ -98,9 +98,7 @@ pub fn generate(
     let defined_signals: std::collections::BTreeSet<String> = attrs
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
-        .flat_map(|a| {
-            signal_util::signal_names_from_attr(a)
-        })
+        .flat_map(signal_util::signal_names_from_attr)
         .collect();
 
     for attr in &attrs {
@@ -119,7 +117,13 @@ pub fn generate(
     // Signal checks: emit once (either local-only or with cross-file fallback)
     if let Some(index) = project_index {
         for attr in &attrs {
-            emit_undefined_signals(attr, line_index, &mut diagnostics, &defined_signals, Some(index));
+            emit_undefined_signals(
+                attr,
+                line_index,
+                &mut diagnostics,
+                &defined_signals,
+                Some(index),
+            );
         }
     } else {
         for attr in &attrs {
@@ -185,22 +189,23 @@ fn check_attribute_validity(
                 ..Default::default()
             });
         }
-        (attributes::Requirement::Must, Some(key)) if attr.plugin_name == "on"
-            && !KNOWN_DOM_EVENTS.contains(&key.as_str()) => {
-                let pos = attr.raw_name.find(':').unwrap_or(0);
-                let range = byte_range_to_lsp_range(
-                    line_index,
-                    attr.name_start + pos + 1,
-                    attr.name_start + pos + 1 + key.len(),
-                );
-                diagnostics.push(Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::WARNING),
-                    source: Some("datastar".to_string()),
-                    message: format!("Unknown event: '{key}' is not a recognized event name.",),
-                    ..Default::default()
-                });
-            }
+        (attributes::Requirement::Must, Some(key))
+            if attr.plugin_name == "on" && !KNOWN_DOM_EVENTS.contains(&key.as_str()) =>
+        {
+            let pos = attr.raw_name.find(':').unwrap_or(0);
+            let range = byte_range_to_lsp_range(
+                line_index,
+                attr.name_start + pos + 1,
+                attr.name_start + pos + 1 + key.len(),
+            );
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("datastar".to_string()),
+                message: format!("Unknown event: '{key}' is not a recognized event name.",),
+                ..Default::default()
+            });
+        }
         (attributes::Requirement::Denied, Some(key)) => {
             let pos = attr.raw_name.find(':').unwrap_or(0);
             let range = byte_range_to_lsp_range(
@@ -687,14 +692,20 @@ mod tests {
     fn test_bind_value_defines_signal() {
         let html = r#"<input data-bind="percentage" /><button data-on:click="$percentage = 50">Set</button>"#;
         let diags = diags_for(html);
-        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$percentage'")));
+        assert!(!diags
+            .iter()
+            .any(|d| d.message.contains("Undefined signal: '$percentage'")));
     }
 
     #[test]
     fn test_signals_object_defines_signals() {
         let html = r#"<div data-signals="{percentage: 0, contents: 'hello'}" data-effect="$percentage = $contents.toUpperCase()"></div>"#;
         let diags = diags_for(html);
-        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$percentage'")));
-        assert!(!diags.iter().any(|d| d.message.contains("Undefined signal: '$contents'")));
+        assert!(!diags
+            .iter()
+            .any(|d| d.message.contains("Undefined signal: '$percentage'")));
+        assert!(!diags
+            .iter()
+            .any(|d| d.message.contains("Undefined signal: '$contents'")));
     }
 }

@@ -30,18 +30,13 @@ pub fn generate(
             // Cursor is inside a data-* attribute name — complete attribute names
             items.extend(complete_attribute_names(&attrs));
         }
-        CursorPosition::AfterColon {
-            plugin_name,
-            key,
-        } => {
+        CursorPosition::AfterColon { plugin_name, key } => {
             if let Some(def) = attributes::all().get(plugin_name.as_str()) {
-                let matching_attr = attrs
-                    .iter()
-                    .find(|a| {
-                        a.plugin_name == plugin_name
-                            && a.name_start <= cursor_byte
-                            && a.name_start + a.name_len >= cursor_byte
-                    });
+                let matching_attr = attrs.iter().find(|a| {
+                    a.plugin_name == plugin_name
+                        && a.name_start <= cursor_byte
+                        && a.name_start + a.name_len >= cursor_byte
+                });
 
                 // Show modifiers if cursor is after __ in an existing key.
                 // Also show modifiers when raw_name ends with _ (user just typed first
@@ -50,9 +45,7 @@ pub fn generate(
                     !k.is_empty()
                         && matching_attr.is_some_and(|a| {
                             let has_double = a.raw_name.contains("__")
-                                && cursor_byte
-                                    > a.name_start
-                                        + a.raw_name.find("__").unwrap_or(0);
+                                && cursor_byte > a.name_start + a.raw_name.find("__").unwrap_or(0);
                             let has_single_trailing =
                                 a.raw_name.ends_with('_') && !a.raw_name.contains("__");
                             has_double || has_single_trailing
@@ -61,10 +54,7 @@ pub fn generate(
 
                 if show_modifiers {
                     let used_mods = matching_attr.map(|a| &a.modifiers);
-                    items.extend(complete_modifiers(
-                        def,
-                        used_mods.unwrap_or(&Vec::new()),
-                    ));
+                    items.extend(complete_modifiers(def, used_mods.unwrap_or(&Vec::new())));
                 } else {
                     items.extend(complete_keys(&plugin_name));
                 }
@@ -81,12 +71,10 @@ pub fn generate(
         CursorPosition::InMarkup => {
             // Cursor just past a data-* attribute name — check for key/modifier completions.
             // e.g. <button data-on:click__>| or <input data-bind: |>|
-            let just_after = attrs
-                .iter()
-                .find(|a| {
-                    let name_end = a.name_start + a.name_len;
-                    cursor_byte >= name_end && cursor_byte <= name_end + 3
-                });
+            let just_after = attrs.iter().find(|a| {
+                let name_end = a.name_start + a.name_len;
+                cursor_byte >= name_end && cursor_byte <= name_end + 3
+            });
             if let Some(attr) = just_after {
                 if let Some(def) = attributes::all().get(attr.plugin_name.as_str()) {
                     let has_colon = attr.raw_name.contains(':') || attr.has_trailing_colon;
@@ -485,7 +473,11 @@ mod tests {
         let tree = parser.parse(html, None).unwrap();
         let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), html);
         let items = complete_signals(&attrs);
-        assert!(items.iter().any(|s| s.label == "$percentage"), "got: {:?}", items.iter().map(|i| &i.label).collect::<Vec<_>>());
+        assert!(
+            items.iter().any(|s| s.label == "$percentage"),
+            "got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -535,7 +527,15 @@ mod tests {
         let li = LineIndex::new(html.to_string());
         // `<button data-on:></button>` — colon at byte 15
         let (line, col) = li.byte_to_position(15);
-        let items = generate(&li, html, Position { line, character: col }, &uri);
+        let items = generate(
+            &li,
+            html,
+            Position {
+                line,
+                character: col,
+            },
+            &uri,
+        );
         assert!(
             items.iter().any(|i| i.label == "click"),
             "should suggest event names, got: {:?}",

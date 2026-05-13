@@ -245,18 +245,12 @@ mod tests {
 
     #[test]
     fn test_signal_at_cursor_on_dollar() {
-        assert_eq!(
-            signal_at_cursor("$counter", 0),
-            Some("counter".to_string())
-        );
+        assert_eq!(signal_at_cursor("$counter", 0), Some("counter".to_string()));
     }
 
     #[test]
     fn test_signal_at_cursor_on_char() {
-        assert_eq!(
-            signal_at_cursor("$counter", 3),
-            Some("counter".to_string())
-        );
+        assert_eq!(signal_at_cursor("$counter", 3), Some("counter".to_string()));
     }
 
     #[test]

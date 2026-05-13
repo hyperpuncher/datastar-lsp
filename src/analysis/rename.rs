@@ -52,8 +52,14 @@ pub fn rename_signal(
             let (line, col) = line_index.byte_to_position(start);
             edits.push(TextEdit {
                 range: tower_lsp::lsp_types::Range {
-                    start: Position { line, character: col },
-                    end: Position { line, character: col + top.len() as u32 },
+                    start: Position {
+                        line,
+                        character: col,
+                    },
+                    end: Position {
+                        line,
+                        character: col + top.len() as u32,
+                    },
                 },
                 new_text: new_name.to_string(),
             });
@@ -68,8 +74,14 @@ pub fn rename_signal(
                     let (_, end_col) = line_index.byte_to_position(value_start + r_end);
                     edits.push(TextEdit {
                         range: tower_lsp::lsp_types::Range {
-                            start: Position { line, character: col },
-                            end: Position { line, character: end_col },
+                            start: Position {
+                                line,
+                                character: col,
+                            },
+                            end: Position {
+                                line,
+                                character: end_col,
+                            },
                         },
                         new_text: new_name.to_string(),
                     });
@@ -81,8 +93,14 @@ pub fn rename_signal(
                     let (line, col) = line_index.byte_to_position(start);
                     edits.push(TextEdit {
                         range: tower_lsp::lsp_types::Range {
-                            start: Position { line, character: col },
-                            end: Position { line, character: col + top.len() as u32 },
+                            start: Position {
+                                line,
+                                character: col,
+                            },
+                            end: Position {
+                                line,
+                                character: col + top.len() as u32,
+                            },
                         },
                         new_text: new_name.to_string(),
                     });
@@ -132,8 +150,14 @@ pub fn rename_signal(
                 let (line, col) = li.byte_to_position(def.1);
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {
-                        start: Position { line, character: col },
-                        end: Position { line, character: col + def.2 as u32 },
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col + def.2 as u32,
+                        },
                     },
                     new_text: new_name.to_string(),
                 });
@@ -153,8 +177,14 @@ pub fn rename_signal(
                 let (line, col) = cross_li.byte_to_position(pos + 1);
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {
-                        start: Position { line, character: col },
-                        end: Position { line, character: col + top.len() as u32 },
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col + top.len() as u32,
+                        },
                     },
                     new_text: new_name.to_string(),
                 });

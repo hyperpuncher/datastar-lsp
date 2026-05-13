@@ -20,7 +20,10 @@ pub fn goto_definition(
 
     // Local definition
     for def_attr in &attrs {
-        if DEFINERS.contains(&def_attr.plugin_name.as_str()) && def_attr.key.as_deref() == Some(top)
+        if DEFINERS.contains(&def_attr.plugin_name.as_str())
+            && signal_util::signal_names_from_attr(def_attr)
+                .iter()
+                .any(|n| n == top)
         {
             let pos = line_index.byte_to_position(def_attr.name_start);
             return Some(GotoDefinitionResponse::Scalar(Location {
@@ -39,28 +42,28 @@ pub fn goto_definition(
         }
     }
 
-    // Cross-file
+    // Cross-file: search for data-{plugin}:{name} and data-{plugin}="{name}"
     if let Some(index) = project_index {
         for entry in index.iter() {
             let cross_li = entry.value();
             let cross_text = cross_li.text();
             for prefix in DEFINER_PREFIXES {
-                let pattern = format!("{prefix}{top}");
-                if let Some(pos) = cross_text.find(&pattern) {
-                    let (line, col) = cross_li.byte_to_position(pos + prefix.len());
-                    return Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: entry.key().clone(),
-                        range: Range {
-                            start: Position {
-                                line,
-                                character: col,
+                for pattern in [
+                    format!("{prefix}:{top}"),
+                    format!("{prefix}=\"{top}\""),
+                ] {
+                    if let Some(pos) = cross_text.find(&pattern) {
+                        let (line, col) = cross_li.byte_to_position(
+                            pos + prefix.len() + 1, // skip "data-<plugin>" and separator (: or =)
+                        );
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: entry.key().clone(),
+                            range: Range {
+                                start: Position { line, character: col },
+                                end: Position { line, character: col + top.len() as u32 },
                             },
-                            end: Position {
-                                line,
-                                character: col + top.len() as u32,
-                            },
-                        },
-                    }));
+                        }));
+                    }
                 }
             }
         }
@@ -106,5 +109,11 @@ mod tests {
     fn test_goto_bind_definition() {
         let html = r#"<input data-bind:count /><button data-on:click="$count++">+</button>"#;
         assert!(gd_for(html, "$count").is_some());
+    }
+
+    #[test]
+    fn test_goto_bind_value_definition() {
+        let html = r#"<input data-bind="percentage" /><button data-on:click="$percentage = 50">Set</button>"#;
+        assert!(gd_for(html, "$percentage").is_some());
     }
 }

@@ -185,8 +185,8 @@ fn check_attribute_validity(
                 ..Default::default()
             });
         }
-        (attributes::Requirement::Must, Some(key)) if attr.plugin_name == "on" => {
-            if !KNOWN_DOM_EVENTS.contains(&key.as_str()) {
+        (attributes::Requirement::Must, Some(key)) if attr.plugin_name == "on"
+            && !KNOWN_DOM_EVENTS.contains(&key.as_str()) => {
                 let pos = attr.raw_name.find(':').unwrap_or(0);
                 let range = byte_range_to_lsp_range(
                     line_index,
@@ -201,7 +201,6 @@ fn check_attribute_validity(
                     ..Default::default()
                 });
             }
-        }
         (attributes::Requirement::Denied, Some(key)) => {
             let pos = attr.raw_name.find(':').unwrap_or(0);
             let range = byte_range_to_lsp_range(
@@ -583,7 +582,7 @@ fn check_expression_syntax(
     }
 
     // Unclosed delimiters
-    if let Some((open, _pos)) = stack.last() {
+    if let Some((open, _)) = stack.last() {
         let close = match open {
             b'(' => b')',
             b'[' => b']',

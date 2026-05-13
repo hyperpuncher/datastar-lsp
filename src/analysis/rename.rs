@@ -37,23 +37,45 @@ pub fn rename_signal(
 
     // Rename definitions in this file
     for attr in &attrs {
-        if DEFINERS.contains(&attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
-            let key_pos = attr.raw_name.find(':').unwrap_or(0);
+        if !DEFINERS.contains(&attr.plugin_name.as_str()) {
+            continue;
+        }
+        if !signal_util::signal_names_from_attr(attr)
+            .iter()
+            .any(|n| n.as_str() == top)
+        {
+            continue;
+        }
+        // Key-based: data-bind:foo → rename the key after colon
+        if let Some(key_pos) = attr.raw_name.find(':') {
             let start = attr.name_start + key_pos + 1;
             let (line, col) = line_index.byte_to_position(start);
             edits.push(TextEdit {
                 range: tower_lsp::lsp_types::Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
-                    end: Position {
-                        line,
-                        character: col + top.len() as u32,
-                    },
+                    start: Position { line, character: col },
+                    end: Position { line, character: col + top.len() as u32 },
                 },
                 new_text: new_name.to_string(),
             });
+            continue;
+        }
+        // Value-based simple name: data-bind="foo" → rename inside value
+        if let Some(value_start) = attr.value_start {
+            if let Some(ref val) = attr.value {
+                let name = val.trim();
+                if name == top {
+                    let pos = val.find(top).unwrap_or(0);
+                    let start = value_start + pos;
+                    let (line, col) = line_index.byte_to_position(start);
+                    edits.push(TextEdit {
+                        range: tower_lsp::lsp_types::Range {
+                            start: Position { line, character: col },
+                            end: Position { line, character: col + top.len() as u32 },
+                        },
+                        new_text: new_name.to_string(),
+                    });
+                }
+            }
         }
     }
 
@@ -198,5 +220,15 @@ mod tests {
         let html = r#"<div data-signals:counter="0"><span data-text="$counter"></span></div>"#;
         let result = ren_for(html, "$counter", "my name");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rename_value_based() {
+        // data-bind="percentage" — value-based definition
+        let html = r#"<input data-bind="percentage" /><div data-text="$percentage"></div>"#;
+        let result = ren_for(html, "$percentage", "pct");
+        assert!(result.is_some());
+        let total: usize = result.unwrap().values().map(|v| v.len()).sum();
+        assert!(total >= 2, "got {} edits", total);
     }
 }

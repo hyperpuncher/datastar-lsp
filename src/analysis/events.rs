@@ -119,22 +119,22 @@ static PARENTS: LazyLock<BTreeMap<&str, &str>> = LazyLock::new(|| {
 
 static PROPERTIES: LazyLock<BTreeMap<&str, &[EventProp]>> = LazyLock::new(|| {
     [
-        ("Event", &EVENT_PROPS[..] as &[_]),
-        ("MouseEvent", &MOUSE_PROPS[..] as &[_]),
-        ("KeyboardEvent", &KB_PROPS[..] as &[_]),
-        ("FocusEvent", &FOCUS_PROPS[..] as &[_]),
-        ("InputEvent", &INPUT_PROPS[..] as &[_]),
-        ("TouchEvent", &TOUCH_PROPS[..] as &[_]),
-        ("DragEvent", &DRAG_PROPS[..] as &[_]),
-        ("WheelEvent", &WHEEL_PROPS[..] as &[_]),
-        ("PointerEvent", &POINTER_PROPS[..] as &[_]),
-        ("AnimationEvent", &ANIM_PROPS[..] as &[_]),
-        ("TransitionEvent", &TRANSITION_PROPS[..] as &[_]),
-        ("SubmitEvent", &SUBMIT_PROPS[..] as &[_]),
-        ("ClipboardEvent", &CLIPBOARD_PROPS[..] as &[_]),
-        ("HashChangeEvent", &HASH_PROPS[..] as &[_]),
-        ("PageTransitionEvent", &PAGE_PROPS[..] as &[_]),
-        ("ProgressEvent", &PROGRESS_PROPS[..] as &[_]),
+        ("Event", EVENT_PROPS as &[_]),
+        ("MouseEvent", MOUSE_PROPS as &[_]),
+        ("KeyboardEvent", KB_PROPS as &[_]),
+        ("FocusEvent", FOCUS_PROPS as &[_]),
+        ("InputEvent", INPUT_PROPS as &[_]),
+        ("TouchEvent", TOUCH_PROPS as &[_]),
+        ("DragEvent", DRAG_PROPS as &[_]),
+        ("WheelEvent", WHEEL_PROPS as &[_]),
+        ("PointerEvent", POINTER_PROPS as &[_]),
+        ("AnimationEvent", ANIM_PROPS as &[_]),
+        ("TransitionEvent", TRANSITION_PROPS as &[_]),
+        ("SubmitEvent", SUBMIT_PROPS as &[_]),
+        ("ClipboardEvent", CLIPBOARD_PROPS as &[_]),
+        ("HashChangeEvent", HASH_PROPS as &[_]),
+        ("PageTransitionEvent", PAGE_PROPS as &[_]),
+        ("ProgressEvent", PROGRESS_PROPS as &[_]),
     ]
     .into_iter()
     .collect()

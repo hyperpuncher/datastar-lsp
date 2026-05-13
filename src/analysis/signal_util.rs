@@ -11,14 +11,16 @@ pub const DEFINERS: &[&str] = &[
     "match-media",
 ];
 
-/// Full `data-{prefix}:` strings for cross-file string scanning.
+/// `data-` prefix + plugin name for cross-file string scanning.
+/// Matches both key-based (`data-bind:foo`) and value-based (`data-bind="foo"`)
+/// via the common `data-{plugin}` prefix.
 pub const DEFINER_PREFIXES: &[&str] = &[
-    "data-signals:",
-    "data-bind:",
-    "data-computed:",
-    "data-ref:",
-    "data-indicator:",
-    "data-match-media:",
+    "data-signals",
+    "data-bind",
+    "data-computed",
+    "data-ref",
+    "data-indicator",
+    "data-match-media",
 ];
 
 /// Return true if the top-level signal name is a builtin (evt, el, __*).
@@ -89,14 +91,8 @@ pub fn signal_names_from_attr(attr: &AttrData) -> Vec<String> {
     let trimmed = value.trim();
 
     // Object literal: data-signals="{foo: 1, bar: 2}"
-    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with("{\"") && trimmed.ends_with("\"}"))
-    {
-        let inner = if trimmed.starts_with("{\"") {
-            &trimmed[2..trimmed.len() - 2]
-        } else {
-            &trimmed[1..trimmed.len() - 1]
-        };
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len() - 1];
         for part in split_obj_keys(inner) {
             let name = part.trim();
             if !name.is_empty() && is_valid_signal_name(name) {
@@ -166,13 +162,14 @@ fn extract_key(part: &str) -> Option<&str> {
 }
 
 /// Check if a signal name is found in cross-file index text.
+/// Searches for both `data-{plugin}:{name}` and `data-{plugin}="{name}"`.
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
     index.iter().any(|e| {
-        let li = e.value();
-        let t = li.text();
-        DEFINER_PREFIXES
-            .iter()
-            .any(|prefix| t.contains(&format!("{prefix}{name}")))
+        let t = e.value().text();
+        DEFINER_PREFIXES.iter().any(|prefix| {
+            t.contains(&format!("{prefix}:{name}"))
+                || t.contains(&format!("{prefix}=\"{name}\""))
+        })
     })
 }
 

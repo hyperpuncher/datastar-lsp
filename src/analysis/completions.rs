@@ -369,8 +369,8 @@ fn complete_signals_filtered(attrs: &[AttrData], prefix: Option<&str>) -> Vec<Co
     attrs
         .iter()
         .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
-        .filter_map(|a| a.key.as_ref())
-        .filter(|k| seen.insert(*k))
+        .flat_map(crate::analysis::signal_util::signal_names_from_attr)
+        .filter(|name| seen.insert(name.clone()))
         .filter(|n| prefix.is_none_or(|p| n.starts_with(p) && n.len() > p.len()))
         .map(|name| CompletionItem {
             label: format!("${name}"),
@@ -464,6 +464,33 @@ mod tests {
     #[test]
     fn test_complete_signals_direct() {
         let html = r#"<div data-signals:foo="1" data-bind:bar><span data-text="$"></span></div>"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_html::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(html, None).unwrap();
+        let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), html);
+        let items = complete_signals(&attrs);
+        assert!(items.iter().any(|s| s.label == "$foo"));
+        assert!(items.iter().any(|s| s.label == "$bar"));
+    }
+
+    #[test]
+    fn test_complete_signals_from_value() {
+        let html = r#"<div data-bind="percentage"><span data-text="$"></span></div>"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_html::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(html, None).unwrap();
+        let attrs = crate::analysis::ts_util::collect_from_tree(tree.root_node(), html);
+        let items = complete_signals(&attrs);
+        assert!(items.iter().any(|s| s.label == "$percentage"), "got: {:?}", items.iter().map(|i| &i.label).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_complete_signals_from_obj_literal() {
+        let html = r#"<div data-signals="{foo: 1, bar: 2}"><span data-text="$"></span></div>"#;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_html::LANGUAGE.into())

@@ -32,7 +32,11 @@ pub fn find_references(
 
     // Local definitions
     for attr in &attrs {
-        if DEFINERS.contains(&attr.plugin_name.as_str()) && attr.key.as_deref() == Some(top) {
+        if DEFINERS.contains(&attr.plugin_name.as_str())
+            && signal_util::signal_names_from_attr(attr)
+                .iter()
+                .any(|n| n == top)
+        {
             let (line, col) = line_index.byte_to_position(attr.name_start);
             locations.push(Location {
                 uri: uri.clone(),
@@ -76,7 +80,7 @@ pub fn find_references(
         }
     }
 
-    // Cross-file
+    // Cross-file: search for data-{plugin}:{name} and data-{plugin}="{name}"
     if let Some(index) = project_index {
         for entry in index.iter() {
             let cross_li = entry.value();
@@ -85,22 +89,22 @@ pub fn find_references(
                 continue;
             }
             for prefix in DEFINER_PREFIXES {
-                let pattern = format!("{prefix}{top}");
-                for (pos, _) in cross_text.match_indices(&pattern) {
-                    let (line, col) = cross_li.byte_to_position(pos + prefix.len());
-                    locations.push(Location {
-                        uri: entry.key().clone(),
-                        range: Range {
-                            start: Position {
-                                line,
-                                character: col,
+                for pattern in [
+                    format!("{prefix}:{top}"),
+                    format!("{prefix}=\"{top}\""),
+                ] {
+                    for (pos, _) in cross_text.match_indices(&pattern) {
+                        let (line, col) = cross_li.byte_to_position(
+                            pos + prefix.len() + 1, // skip "data-<plugin>" and separator
+                        );
+                        locations.push(Location {
+                            uri: entry.key().clone(),
+                            range: Range {
+                                start: Position { line, character: col },
+                                end: Position { line, character: col + top.len() as u32 },
                             },
-                            end: Position {
-                                line,
-                                character: col + top.len() as u32,
-                            },
-                        },
-                    });
+                        });
+                    }
                 }
             }
             let dollar = format!("${top}");
@@ -109,14 +113,8 @@ pub fn find_references(
                 locations.push(Location {
                     uri: entry.key().clone(),
                     range: Range {
-                        start: Position {
-                            line,
-                            character: col,
-                        },
-                        end: Position {
-                            line,
-                            character: col + dollar.len() as u32,
-                        },
+                        start: Position { line, character: col },
+                        end: Position { line, character: col + dollar.len() as u32 },
                     },
                 });
             }
@@ -158,5 +156,12 @@ mod tests {
     fn test_no_references_for_undefined() {
         let locs = refs_for(r#"<div data-text="$foo"></div>"#, "$foo");
         assert!(locs.is_empty());
+    }
+
+    #[test]
+    fn test_find_references_value_based() {
+        let html = r#"<input data-bind="percentage" /><button data-on:click="$percentage = 50">Set</button>"#;
+        let locs = refs_for(html, "$percentage");
+        assert!(locs.len() >= 2, "got {}", locs.len());
     }
 }

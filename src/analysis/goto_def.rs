@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS, DEFINER_PREFIXES};
+use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
@@ -42,30 +42,12 @@ pub fn goto_definition(
         }
     }
 
-    // Cross-file: search for data-{plugin}:{name} and data-{plugin}="{name}"
+    // Cross-file
     if let Some(index) = project_index {
-        for entry in index.iter() {
-            let cross_li = entry.value();
-            let cross_text = cross_li.text();
-            for prefix in DEFINER_PREFIXES {
-                for pattern in [
-                    format!("{prefix}:{top}"),
-                    format!("{prefix}=\"{top}\""),
-                ] {
-                    if let Some(pos) = cross_text.find(&pattern) {
-                        let (line, col) = cross_li.byte_to_position(
-                            pos + prefix.len() + 1, // skip "data-<plugin>" and separator (: or =)
-                        );
-                        return Some(GotoDefinitionResponse::Scalar(Location {
-                            uri: entry.key().clone(),
-                            range: Range {
-                                start: Position { line, character: col },
-                                end: Position { line, character: col + top.len() as u32 },
-                            },
-                        }));
-                    }
-                }
-            }
+        if let Some(def) = signal_util::index_find_def_entry(index, top)
+            .and_then(|e| signal_util::def_entry_to_location(index, &e))
+        {
+            return Some(GotoDefinitionResponse::Scalar(def));
         }
     }
 

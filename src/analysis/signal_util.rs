@@ -164,12 +164,70 @@ fn extract_key(part: &str) -> Option<&str> {
 /// Check if a signal name is found in cross-file index text.
 /// Searches for both `data-{plugin}:{name}` and `data-{plugin}="{name}"`.
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
-    index.iter().any(|e| {
-        let t = e.value().text();
-        DEFINER_PREFIXES.iter().any(|prefix| {
-            t.contains(&format!("{prefix}:{name}"))
-                || t.contains(&format!("{prefix}=\"{name}\""))
-        })
+    index_find_def_entry(index, name).is_some()
+}
+
+/// Find the first cross-file definition of a signal.
+/// Returns (url, byte_offset_in_text, name_len) or None.
+/// The byte offset points to the first byte of the signal name.
+pub fn index_find_def_entry(
+    index: &crate::analysis::project_index::ProjectIndex,
+    name: &str,
+) -> Option<(tower_lsp::lsp_types::Url, usize, usize)> {
+    for entry in index.iter() {
+        let t = entry.value().text();
+        for prefix in DEFINER_PREFIXES {
+            // Key-based: data-bind:foo
+            let key_pat = format!("{prefix}:{name}");
+            if let Some(pos) = t.find(&key_pat) {
+                return Some((entry.key().clone(), pos + prefix.len() + 1, name.len()));
+            }
+            // Value-based: data-bind="foo"
+            let val_pat = format!("{prefix}=\"{name}\"");
+            if let Some(pos) = t.find(&val_pat) {
+                return Some((entry.key().clone(), pos + prefix.len() + 2, name.len()));
+            }
+        }
+    }
+    None
+}
+
+/// Find all cross-file definition locations of a signal.
+pub fn index_find_all_defs(
+    index: &crate::analysis::project_index::ProjectIndex,
+    name: &str,
+) -> Vec<(tower_lsp::lsp_types::Url, usize, usize)> {
+    let mut results = Vec::new();
+    for entry in index.iter() {
+        let t = entry.value().text();
+        for prefix in DEFINER_PREFIXES {
+            let key_pat = format!("{prefix}:{name}");
+            for (pos, _) in t.match_indices(&key_pat) {
+                results.push((entry.key().clone(), pos + prefix.len() + 1, name.len()));
+            }
+            let val_pat = format!("{prefix}=\"{name}\"");
+            for (pos, _) in t.match_indices(&val_pat) {
+                results.push((entry.key().clone(), pos + prefix.len() + 2, name.len()));
+            }
+        }
+    }
+    results
+}
+
+/// Convert a (url, byte_offset, name_len) cross-file result into an LSP Location.
+pub fn def_entry_to_location(
+    index: &crate::analysis::project_index::ProjectIndex,
+    entry: &(tower_lsp::lsp_types::Url, usize, usize),
+) -> Option<tower_lsp::lsp_types::Location> {
+    let (url, pos, len) = entry;
+    let li = index.line_index(url)?;
+    let (line, col) = li.byte_to_position(*pos);
+    Some(tower_lsp::lsp_types::Location {
+        uri: url.clone(),
+        range: tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position { line, character: col },
+            end: tower_lsp::lsp_types::Position { line, character: col + *len as u32 },
+        },
     })
 }
 

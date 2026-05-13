@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::signal_util::{self, DEFINERS, DEFINER_PREFIXES};
+use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
 
@@ -80,38 +80,29 @@ pub fn find_references(
         }
     }
 
-    // Cross-file: search for data-{plugin}:{name} and data-{plugin}="{name}"
+    // Cross-file definitions
     if let Some(index) = project_index {
-        for entry in index.iter() {
-            let cross_li = entry.value();
-            let cross_text = cross_li.text();
-            if entry.key() == uri {
+        for def in signal_util::index_find_all_defs(index, top) {
+            if &def.0 == uri {
                 continue;
             }
-            for prefix in DEFINER_PREFIXES {
-                for pattern in [
-                    format!("{prefix}:{top}"),
-                    format!("{prefix}=\"{top}\""),
-                ] {
-                    for (pos, _) in cross_text.match_indices(&pattern) {
-                        let (line, col) = cross_li.byte_to_position(
-                            pos + prefix.len() + 1, // skip "data-<plugin>" and separator
-                        );
-                        locations.push(Location {
-                            uri: entry.key().clone(),
-                            range: Range {
-                                start: Position { line, character: col },
-                                end: Position { line, character: col + top.len() as u32 },
-                            },
-                        });
-                    }
-                }
+            if let Some(loc) = signal_util::def_entry_to_location(index, &def) {
+                locations.push(loc);
             }
+        }
+        // Cross-file $references
+        for entry in index.iter() {
+            let cross_uri = entry.key().clone();
+            if &cross_uri == uri {
+                continue;
+            }
+            let cross_li = entry.value();
+            let cross_text = cross_li.text();
             let dollar = format!("${top}");
             for (pos, _) in cross_text.match_indices(&dollar) {
                 let (line, col) = cross_li.byte_to_position(pos);
                 locations.push(Location {
-                    uri: entry.key().clone(),
+                    uri: cross_uri.clone(),
                     range: Range {
                         start: Position { line, character: col },
                         end: Position { line, character: col + dollar.len() as u32 },

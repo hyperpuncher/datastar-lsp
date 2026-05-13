@@ -107,8 +107,27 @@ pub fn rename_signal(
         }
     }
 
-    // Cross-file
+    // Cross-file definitions and $references
     if let Some(index) = project_index {
+        // Rename definitions in other files
+        for def in signal_util::index_find_all_defs(index, top) {
+            if &def.0 == uri {
+                continue;
+            }
+            let cross_edits = changes.entry(def.0.clone()).or_default();
+            let li = index.line_index(&def.0);
+            if let Some(li) = li {
+                let (line, col) = li.byte_to_position(def.1);
+                cross_edits.push(TextEdit {
+                    range: tower_lsp::lsp_types::Range {
+                        start: Position { line, character: col },
+                        end: Position { line, character: col + def.2 as u32 },
+                    },
+                    new_text: new_name.to_string(),
+                });
+            }
+        }
+        // Rename $references in other files
         for entry in index.iter() {
             let cross_uri = entry.key().clone();
             if &cross_uri == uri {
@@ -119,17 +138,11 @@ pub fn rename_signal(
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
             let top_with_dollar = format!("${top}");
             for (pos, _) in cross_text.match_indices(&top_with_dollar) {
-                let (line, col) = cross_li.byte_to_position(pos + 1); // +1 to skip $
+                let (line, col) = cross_li.byte_to_position(pos + 1);
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {
-                        start: Position {
-                            line,
-                            character: col,
-                        },
-                        end: Position {
-                            line,
-                            character: col + top.len() as u32,
-                        },
+                        start: Position { line, character: col },
+                        end: Position { line, character: col + top.len() as u32 },
                     },
                     new_text: new_name.to_string(),
                 });

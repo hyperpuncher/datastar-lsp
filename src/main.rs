@@ -4,6 +4,12 @@ mod server;
 
 #[tokio::main]
 async fn main() {
+    // Handle --version before starting LSP
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("datastar-lsp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();

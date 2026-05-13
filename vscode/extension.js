@@ -28,13 +28,12 @@ async function downloadBinary(version) {
 	const cacheDir = getCacheDir();
 	const binPath = path.join(cacheDir, BINARY_NAME);
 
-	if (fs.existsSync(binPath)) return binPath;
-
+	// Resolve "latest" to actual tag via GitHub API
 	let tag = version;
 	if (tag === "latest") {
 		try {
 			const https = require("https");
-			tag = await new Promise((resolve) => {
+			tag = await new Promise((resolve, reject) => {
 				https.get({
 					hostname: "api.github.com",
 					path: `/repos/${REPO}/releases/latest`,
@@ -43,11 +42,40 @@ async function downloadBinary(version) {
 					let body = "";
 					res.on("data", (d) => body += d);
 					res.on("end", () => {
-						try { resolve(JSON.parse(body).tag_name); } catch (_) { resolve("v0.7.0"); }
+						try {
+							resolve(JSON.parse(body).tag_name);
+						} catch (_) {
+							reject(new Error("failed to parse release"));
+						}
 					});
-				}).on("error", () => resolve("v0.7.0"));
+				}).on("error", reject);
 			});
-		} catch (_) { tag = "v0.7.0"; }
+		} catch (_) {
+			// Can't reach GitHub — use existing binary if available
+			if (fs.existsSync(binPath)) return binPath;
+			vscode.window.showErrorMessage(
+				"datastar-lsp: cannot reach GitHub to download binary"
+			);
+			return null;
+		}
+	}
+
+	// Check if existing binary matches desired version
+	if (fs.existsSync(binPath)) {
+		try {
+			const { execSync } = require("child_process");
+			const output = execSync(`"${binPath}" --version`).toString().trim();
+			const installed = output.replace(/^datastar-lsp\s+/, "");
+			const wanted = tag.replace(/^v/, "");
+			if (installed === wanted) {
+				return binPath;
+			}
+			vscode.window.showInformationMessage(
+				`datastar-lsp: updating from ${installed} to ${tag}...`
+			);
+		} catch (_) {
+			// Can't check version (old binary without --version) — re-download
+		}
 	}
 
 	const { platform, arch } = getPlatformArch();

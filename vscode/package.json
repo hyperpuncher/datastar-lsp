@@ -2,7 +2,7 @@
 	"name": "datastar-lsp",
 	"displayName": "Datastar LSP",
 	"description": "Language server for Datastar hypermedia framework - diagnostics, completions, hover, go-to-definition, references, rename",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"publisher": "hyperpuncher",
 	"license": "MIT",
 	"repository": "https://github.com/hyperpuncher/datastar-lsp",

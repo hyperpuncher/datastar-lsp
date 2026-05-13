@@ -161,6 +161,49 @@ fn extract_key(part: &str) -> Option<&str> {
     }
 }
 
+/// For an object-literal value like `"{foo: 1, bar: 2}"`, find the byte offsets
+/// within the value string where `name` appears as an object key.
+/// Returns list of (start_byte, end_byte) positions relative to value start.
+pub fn find_obj_key_ranges(value: &str, name: &str) -> Vec<(usize, usize)> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return vec![];
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut ranges = Vec::new();
+    let mut depth = 0u32;
+    let mut last = 0;
+    let leading_ws = value.len() - trimmed.len();
+    let brace_skip = leading_ws + 1; // skip whitespace + opening {
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                if let Some(key) = extract_key(&inner[last..i]) {
+                    if key == name {
+                        // find exact position of key within this part
+                        let ks = inner[last..i].find(name).unwrap_or(0);
+                        let start = brace_skip + last + ks;
+                        ranges.push((start, start + name.len()));
+                    }
+                }
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    // Last entry
+    if let Some(key) = extract_key(&inner[last..]) {
+        if key == name {
+            let ks = inner[last..].find(name).unwrap_or(0);
+            let start = brace_skip + last + ks;
+            ranges.push((start, start + name.len()));
+        }
+    }
+    ranges
+}
+
 /// Check if a signal name is found in cross-file index text.
 /// Searches for both `data-{plugin}:{name}` and `data-{plugin}="{name}"`.
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
@@ -315,5 +358,14 @@ mod tests {
         let mut names = signal_names_from_attr(&attr);
         names.sort();
         assert_eq!(names, vec!["contents", "percentage"]);
+    }
+
+    #[test]
+    fn test_find_obj_key_ranges() {
+        let val = "{foo: 1, bar: 2, baz: 3}";
+        assert_eq!(find_obj_key_ranges(val, "foo"), vec![(1, 4)]);
+        assert_eq!(find_obj_key_ranges(val, "bar"), vec![(9, 12)]);
+        assert_eq!(find_obj_key_ranges(val, "baz"), vec![(17, 20)]);
+        assert!(find_obj_key_ranges(val, "nope").is_empty());
     }
 }

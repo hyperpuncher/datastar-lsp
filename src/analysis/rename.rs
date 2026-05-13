@@ -62,8 +62,20 @@ pub fn rename_signal(
         // Value-based simple name: data-bind="foo" → rename inside value
         if let Some(value_start) = attr.value_start {
             if let Some(ref val) = attr.value {
-                let name = val.trim();
-                if name == top {
+                // Object literal: data-signals="{foo: 0, bar: 1}"
+                for (r_start, r_end) in signal_util::find_obj_key_ranges(val, top) {
+                    let (line, col) = line_index.byte_to_position(value_start + r_start);
+                    let (_, end_col) = line_index.byte_to_position(value_start + r_end);
+                    edits.push(TextEdit {
+                        range: tower_lsp::lsp_types::Range {
+                            start: Position { line, character: col },
+                            end: Position { line, character: end_col },
+                        },
+                        new_text: new_name.to_string(),
+                    });
+                }
+                // Simple value: data-bind="foo"
+                if val.trim() == top {
                     let pos = val.find(top).unwrap_or(0);
                     let start = value_start + pos;
                     let (line, col) = line_index.byte_to_position(start);
@@ -240,6 +252,16 @@ mod tests {
         // data-bind="percentage" — value-based definition
         let html = r#"<input data-bind="percentage" /><div data-text="$percentage"></div>"#;
         let result = ren_for(html, "$percentage", "pct");
+        assert!(result.is_some());
+        let total: usize = result.unwrap().values().map(|v| v.len()).sum();
+        assert!(total >= 2, "got {} edits", total);
+    }
+
+    #[test]
+    fn test_rename_obj_literal() {
+        // data-signals="{asdf: 0}" — rename key in object
+        let html = r#"<div data-signals="{asdf: 0}"><p data-text="$asdf"></p></div>"#;
+        let result = ren_for(html, "$asdf", "xyz");
         assert!(result.is_some());
         let total: usize = result.unwrap().values().map(|v| v.len()).sum();
         assert!(total >= 2, "got {} edits", total);

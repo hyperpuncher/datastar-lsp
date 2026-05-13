@@ -33,13 +33,25 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![
-                        "$".to_string(),
-                        "@".to_string(),
-                        ":".to_string(),
-                        "_".to_string(),
-                        ".".to_string(),
-                    ]),
+                    trigger_characters: Some({
+                        let mut chars: Vec<String> = ('a'..='z')
+                            .chain('A'..='Z')
+                            .chain('0'..='9')
+                            .map(|c| c.to_string())
+                            .collect();
+                        chars.extend(vec![
+                            "$".to_string(),
+                            "@".to_string(),
+                            ":".to_string(),
+                            "_".to_string(),
+                            ".".to_string(),
+                            "-".to_string(),
+                            ">".to_string(),
+                            "\"".to_string(),
+                            "=".to_string(),
+                        ]);
+                        chars
+                    }),
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
@@ -111,7 +123,10 @@ impl LanguageServer for Backend {
         };
 
         let items = completions::generate(&line_index, &text, position, uri);
-        Ok(Some(CompletionResponse::Array(items)))
+        Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: true,
+            items,
+        })))
     }
 
     async fn goto_definition(

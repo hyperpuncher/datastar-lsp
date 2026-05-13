@@ -44,14 +44,18 @@ pub fn generate(
                     });
 
                 // Show modifiers if cursor is after __ in an existing key.
-                // Show key completions (events, etc.) if no key yet or cursor before __.
+                // Also show modifiers when raw_name ends with _ (user just typed first
+                // underscore of __, InsertCharPre fires before the second _ is inserted).
                 let show_modifiers = key.as_ref().is_some_and(|k| {
                     !k.is_empty()
                         && matching_attr.is_some_and(|a| {
-                            a.raw_name.contains("__")
+                            let has_double = a.raw_name.contains("__")
                                 && cursor_byte
                                     > a.name_start
-                                        + a.raw_name.find("__").unwrap_or(0)
+                                        + a.raw_name.find("__").unwrap_or(0);
+                            let has_single_trailing =
+                                a.raw_name.ends_with('_') && !a.raw_name.contains("__");
+                            has_double || has_single_trailing
                         })
                 });
 

@@ -2,81 +2,9 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Url};
 
 use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
-use crate::data::{actions, attributes, modifiers};
+use crate::data::{actions, attributes, events, modifiers};
 use crate::line_index::LineIndex;
 use crate::util::byte_range_to_lsp_range;
-
-/// Common HTML DOM events used with `data-on:`.
-pub const KNOWN_DOM_EVENTS: &[&str] = &[
-    // Mouse events
-    "click",
-    "dblclick",
-    "contextmenu",
-    "mousedown",
-    "mouseup",
-    "mousemove",
-    "mouseenter",
-    "mouseleave",
-    "mouseover",
-    "mouseout",
-    "wheel",
-    // Keyboard events
-    "keydown",
-    "keyup",
-    "keypress",
-    // Form events
-    "focus",
-    "blur",
-    "change",
-    "input",
-    "submit",
-    "reset",
-    "select",
-    // Window/document events
-    "load",
-    "unload",
-    "beforeunload",
-    "scroll",
-    "resize",
-    "error",
-    // Touch events
-    "touchstart",
-    "touchend",
-    "touchmove",
-    "touchcancel",
-    // Pointer events
-    "pointerdown",
-    "pointerup",
-    "pointermove",
-    "pointerenter",
-    "pointerleave",
-    "pointercancel",
-    // Drag events
-    "drag",
-    "dragstart",
-    "dragend",
-    "dragenter",
-    "dragleave",
-    "dragover",
-    "drop",
-    // Clipboard events
-    "copy",
-    "cut",
-    "paste",
-    // Media events
-    "play",
-    "pause",
-    "ended",
-    "volumechange",
-    "timeupdate",
-    // Animation/transition
-    "animationend",
-    "animationstart",
-    "transitionend",
-    // Datastar custom events
-    "datastar-fetch",
-    "rocket-launched",
-];
 
 /// Generate diagnostics by parsing the document with tree-sitter and walking data-* attrs.
 pub fn generate(
@@ -111,24 +39,15 @@ pub fn generate(
         );
         check_modifier_conflicts(attr, line_index, &mut diagnostics);
         check_expression_syntax(attr, line_index, &mut diagnostics);
-        check_value_actions(attr, &action_registry, line_index, &mut diagnostics);
-    }
-
-    // Signal checks: emit once (either local-only or with cross-file fallback)
-    if let Some(index) = project_index {
-        for attr in &attrs {
-            emit_undefined_signals(
-                attr,
-                line_index,
-                &mut diagnostics,
-                &defined_signals,
-                Some(index),
-            );
-        }
-    } else {
-        for attr in &attrs {
-            emit_undefined_signals(attr, line_index, &mut diagnostics, &defined_signals, None);
-        }
+        // Check value spans (actions + signals) in one pass
+        check_value_spans(
+            attr,
+            line_index,
+            &mut diagnostics,
+            &action_registry,
+            &defined_signals,
+            project_index,
+        );
     }
 
     diagnostics
@@ -190,7 +109,7 @@ fn check_attribute_validity(
             });
         }
         (attributes::Requirement::Must, Some(key))
-            if attr.plugin_name == "on" && !KNOWN_DOM_EVENTS.contains(&key.as_str()) =>
+            if attr.plugin_name == "on" && !events::KNOWN_DOM_EVENTS.contains(&key.as_str()) =>
         {
             let pos = attr.raw_name.find(':').unwrap_or(0);
             let range = byte_range_to_lsp_range(
@@ -311,48 +230,11 @@ fn check_attribute_validity(
     }
 }
 
-fn check_value_actions(
-    attr: &crate::analysis::ts_util::AttrData,
-    registry: &std::collections::BTreeMap<&str, actions::ActionDef>,
-    line_index: &LineIndex,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let value = match &attr.value {
-        Some(v) => v,
-        None => return,
-    };
-    for span in crate::analysis::value_scanner::scan_value(value) {
-        if span.kind != crate::analysis::value_scanner::SpanKind::AtAction {
-            continue;
-        }
-        if registry.contains_key(span.name.as_str())
-            || span.name.starts_with(|c: char| c.is_ascii_uppercase())
-        {
-            continue;
-        }
-        let vs = attr.value_start.unwrap_or(0);
-        let start = vs + span.start;
-        let end = vs + span.end;
-        let range = byte_range_to_lsp_range(line_index, start, end);
-        diagnostics.push(Diagnostic {
-            range,
-            severity: Some(DiagnosticSeverity::WARNING),
-            source: Some("datastar".to_string()),
-            message: format!(
-                "Unknown action: '@{}' is not a recognized Datastar action.",
-                span.name
-            ),
-            ..Default::default()
-        });
-    }
-}
-
-/// Scan a value for `$signal` references and emit diagnostics for undefined signals.
-/// If `project_index` is Some, also checks cross-file definitions.
-fn emit_undefined_signals(
+fn check_value_spans(
     attr: &crate::analysis::ts_util::AttrData,
     line_index: &LineIndex,
     diagnostics: &mut Vec<Diagnostic>,
+    action_registry: &std::collections::BTreeMap<&str, actions::ActionDef>,
     defined: &std::collections::BTreeSet<String>,
     project_index: Option<&crate::analysis::project_index::ProjectIndex>,
 ) {
@@ -360,48 +242,53 @@ fn emit_undefined_signals(
         Some(v) => v,
         None => return,
     };
+    let vs = attr.value_start.unwrap_or(0);
     for span in crate::analysis::value_scanner::scan_value(value) {
-        if span.kind != crate::analysis::value_scanner::SpanKind::DollarSignal {
-            continue;
-        }
-        let top = span.name.split('.').next().unwrap_or("");
-        // Also strip trailing method call for diag message only
-        let display = span.name.trim_end_matches(|c: char| c == '(' || c == ')');
-        if signal_util::is_builtin_signal(top) {
-            continue;
-        }
-        if defined.contains(top) {
-            continue;
-        }
-        if let Some(index) = project_index {
-            if !signal_util::index_find_def(index, top) {
-                emit_undefined(attr, value, line_index, diagnostics, display);
+        match span.kind {
+            crate::analysis::value_scanner::SpanKind::AtAction
+                if !action_registry.contains_key(span.name.as_str())
+                    && !span.name.starts_with(|c: char| c.is_ascii_uppercase()) =>
+            {
+                let start = vs + span.start;
+                let end = vs + span.end;
+                let range = byte_range_to_lsp_range(line_index, start, end);
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("datastar".to_string()),
+                    message: format!(
+                        "Unknown action: '@{}' is not a recognized Datastar action.",
+                        span.name
+                    ),
+                    ..Default::default()
+                });
             }
-        } else {
-            emit_undefined(attr, value, line_index, diagnostics, display);
-        }
-    }
-}
-
-fn emit_undefined(
-    attr: &crate::analysis::ts_util::AttrData,
-    value: &str,
-    line_index: &LineIndex,
-    diagnostics: &mut Vec<Diagnostic>,
-    signal: &str,
-) {
-    if let Some(value_start) = attr.value_start {
-        if let Some(pos) = value.find(&format!("${signal}")) {
-            let start = value_start + pos;
-            let end = start + 1 + signal.len();
-            let range = byte_range_to_lsp_range(line_index, start, end);
-            diagnostics.push(Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::HINT),
-                source: Some("datastar".to_string()),
-                message: format!("Undefined signal: '${signal}' is not defined in this document."),
-                ..Default::default()
-            });
+            crate::analysis::value_scanner::SpanKind::DollarSignal => {
+                let top = span.name.split('.').next().unwrap_or("");
+                let display = span.name.trim_end_matches(['(', ')']);
+                if signal_util::is_builtin_signal(top) || defined.contains(top) {
+                    continue;
+                }
+                if project_index
+                    .as_ref()
+                    .is_some_and(|idx| signal_util::index_find_def(idx, top))
+                {
+                    continue;
+                }
+                let start = vs + span.start;
+                let end = vs + span.end;
+                let range = byte_range_to_lsp_range(line_index, start, end);
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::HINT),
+                    source: Some("datastar".to_string()),
+                    message: format!(
+                        "Undefined signal: '${display}' is not defined in this document."
+                    ),
+                    ..Default::default()
+                });
+            }
+            _ => {}
         }
     }
 }

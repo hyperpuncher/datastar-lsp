@@ -116,8 +116,9 @@ pub fn rename_signal(
         let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
             continue;
         };
+        let dollar = format!("${top_camel}");
         let mut search = value.as_str();
-        while let Some(pos) = search.find(&format!("${top_camel}")) {
+        while let Some(pos) = search.find(&dollar) {
             // value_start points into original text; for HTML it's after the opening quote.
             // pos is a byte offset within `value` (the unquoted contents).
             let byte_pos = value_start + pos;
@@ -166,16 +167,9 @@ pub fn rename_signal(
             }
         }
         // Rename $references in other files
-        for entry in index.iter() {
-            let cross_uri = entry.key().clone();
-            if &cross_uri == uri {
-                continue;
-            }
-            let cross_li = entry.value();
-            let cross_text = cross_li.text();
-            let cross_edits = changes.entry(cross_uri.clone()).or_default();
-            let top_with_dollar = format!("${top_camel}");
-            for (pos, _) in cross_text.match_indices(&top_with_dollar) {
+        for (cross_uri, pos) in signal_util::find_all_refs(index, &top_camel, uri) {
+            if let Some(cross_li) = index.line_index(&cross_uri) {
+                let cross_edits = changes.entry(cross_uri.clone()).or_default();
                 let (line, col) = cross_li.byte_to_position(pos + 1);
                 cross_edits.push(TextEdit {
                     range: tower_lsp::lsp_types::Range {

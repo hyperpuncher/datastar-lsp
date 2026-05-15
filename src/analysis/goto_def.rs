@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{GotoDefinitionResponse, Location, Position, Range, Url};
+use tower_lsp::lsp_types::{GotoDefinitionResponse, Position, Url};
 
 use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
@@ -25,20 +25,9 @@ pub fn goto_definition(
                 .iter()
                 .any(|n| n == top)
         {
-            let pos = line_index.byte_to_position(def_attr.name_start);
-            return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line: pos.0,
-                        character: pos.1,
-                    },
-                    end: Position {
-                        line: pos.0,
-                        character: pos.1 + top.len() as u32,
-                    },
-                },
-            }));
+            return Some(GotoDefinitionResponse::Scalar(
+                signal_util::attr_def_location(def_attr, top, uri, line_index),
+            ));
         }
     }
 

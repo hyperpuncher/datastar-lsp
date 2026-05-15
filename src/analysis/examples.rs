@@ -127,11 +127,11 @@ fn examples() -> ExampleMap {
             &[
                 Example {
                     title: "Lazy load on visible",
-                    html: r#"<div data-intersects="@get('/api/more')">Loading...</div>"#,
+                    html: r#"<div data-on-intersect="@get('/api/more')">Loading...</div>"#,
                 },
                 Example {
                     title: "Once intersection",
-                    html: r#"<img data-intersects__once="@get('/api/image/$id')" />"#,
+                    html: r#"<img data-on-intersect__once="@get('/api/image/$id')" />"#,
                 },
             ][..],
         ),

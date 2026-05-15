@@ -280,6 +280,50 @@ pub fn def_entry_to_location(
     })
 }
 
+/// Build an LSP Location for a signal definition from a parsed attribute.
+pub fn attr_def_location(
+    attr: &crate::analysis::ts_util::AttrData,
+    name: &str,
+    uri: &tower_lsp::lsp_types::Url,
+    line_index: &crate::line_index::LineIndex,
+) -> tower_lsp::lsp_types::Location {
+    let (line, col) = line_index.byte_to_position(attr.name_start);
+    tower_lsp::lsp_types::Location {
+        uri: uri.clone(),
+        range: tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position {
+                line,
+                character: col,
+            },
+            end: tower_lsp::lsp_types::Position {
+                line,
+                character: col + name.len() as u32,
+            },
+        },
+    }
+}
+
+/// Find all `$name` references across the project index.
+/// Returns (url, byte_offset) pairs where the dollar sign starts.
+pub fn find_all_refs(
+    index: &crate::analysis::project_index::ProjectIndex,
+    name: &str,
+    exclude_uri: &tower_lsp::lsp_types::Url,
+) -> Vec<(tower_lsp::lsp_types::Url, usize)> {
+    let dollar = format!("${name}");
+    let mut results = Vec::new();
+    for entry in index.iter() {
+        let uri = entry.key().clone();
+        if &uri == exclude_uri {
+            continue;
+        }
+        for (pos, _) in entry.value().text().match_indices(&dollar) {
+            results.push((uri.clone(), pos));
+        }
+    }
+    results
+}
+
 /// Validate that a signal name is legal (for rename operations).
 pub fn is_valid_signal_name(name: &str) -> bool {
     !name.is_empty()

@@ -3,12 +3,12 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::analysis::cursor::{self, CursorPosition};
-use crate::analysis::diagnostics::KNOWN_DOM_EVENTS;
 use crate::analysis::ts_util::{self, AttrData};
+use crate::data::events::KNOWN_DOM_EVENTS;
 use crate::data::{actions, attributes};
 use crate::line_index::LineIndex;
 
-use crate::analysis::signal_util::{DEFINERS, GLOBAL_MODIFIERS};
+use crate::analysis::signal_util::GLOBAL_MODIFIERS;
 
 pub fn generate(
     line_index: &LineIndex,
@@ -356,7 +356,6 @@ fn complete_signals_filtered(attrs: &[AttrData], prefix: Option<&str>) -> Vec<Co
     let mut seen = std::collections::BTreeSet::new();
     attrs
         .iter()
-        .filter(|a| DEFINERS.contains(&a.plugin_name.as_str()))
         .flat_map(crate::analysis::signal_util::signal_names_from_attr)
         .filter(|name| seen.insert(name.clone()))
         .filter(|n| prefix.is_none_or(|p| n.starts_with(p) && n.len() > p.len()))

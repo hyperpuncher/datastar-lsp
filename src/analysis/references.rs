@@ -37,20 +37,7 @@ pub fn find_references(
                 .iter()
                 .any(|n| n == top)
         {
-            let (line, col) = line_index.byte_to_position(attr.name_start);
-            locations.push(Location {
-                uri: uri.clone(),
-                range: Range {
-                    start: Position {
-                        line,
-                        character: col,
-                    },
-                    end: Position {
-                        line,
-                        character: col + top.len() as u32,
-                    },
-                },
-            });
+            locations.push(signal_util::attr_def_location(attr, top, uri, line_index));
         }
     }
 
@@ -59,8 +46,9 @@ pub fn find_references(
         let (Some(value_start), Some(value)) = (attr.value_start, &attr.value) else {
             continue;
         };
+        let dollar = format!("${top}");
         let mut search = value.as_str();
-        while let Some(pos) = search.find(&format!("${top}")) {
+        while let Some(pos) = search.find(&dollar) {
             let byte_pos = value_start + pos + (value.len() - search.len());
             let (line, col) = line_index.byte_to_position(byte_pos);
             locations.push(Location {
@@ -91,15 +79,8 @@ pub fn find_references(
             }
         }
         // Cross-file $references
-        for entry in index.iter() {
-            let cross_uri = entry.key().clone();
-            if &cross_uri == uri {
-                continue;
-            }
-            let cross_li = entry.value();
-            let cross_text = cross_li.text();
-            let dollar = format!("${top}");
-            for (pos, _) in cross_text.match_indices(&dollar) {
+        for (cross_uri, pos) in signal_util::find_all_refs(index, top, uri) {
+            if let Some(cross_li) = index.line_index(&cross_uri) {
                 let (line, col) = cross_li.byte_to_position(pos);
                 locations.push(Location {
                     uri: cross_uri.clone(),
@@ -110,7 +91,7 @@ pub fn find_references(
                         },
                         end: Position {
                             line,
-                            character: col + dollar.len() as u32,
+                            character: col + 1 + top.len() as u32,
                         },
                     },
                 });

@@ -10,6 +10,10 @@ pub enum CursorPosition {
     AfterColon {
         plugin_name: String,
         key: Option<String>,
+        /// True if cursor is on a `__modifier` portion.
+        on_modifier: bool,
+        /// The modifier key if cursor is on one.
+        modifier_key: Option<String>,
     },
     /// Cursor is inside a `data-*` attribute value.
     AttributeValue {
@@ -21,6 +25,8 @@ pub enum CursorPosition {
     AttrsPropKey {
         plugin_name: String,
         key: Option<String>,
+        on_modifier: bool,
+        modifier_key: Option<String>,
     },
     /// Cursor is on a `data-*` value inside an `attrs={{...}}` prop.
     AttrsPropValue {
@@ -89,10 +95,27 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
     let val_result = find_value_in_attr(attr_node, source, offset);
 
     if at_or_after_colon && val_result.is_none() {
-        return after_colon(name_text, source, colon_offset);
+        return after_colon(name_text, source, colon_offset, offset);
     }
 
     if in_name {
+        // Check if cursor is on a __modifier portion of the name
+        if let Some(mod_pos) = name_text.find("__") {
+            let mod_start = name_start + mod_pos;
+            if offset >= mod_start {
+                let mod_part = &name_text[mod_pos + 2..];
+                let mod_end = mod_part
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_')
+                    .unwrap_or(mod_part.len());
+                let mod_name = &mod_part[..mod_end];
+                return CursorPosition::AfterColon {
+                    plugin_name: plugin_name(name_text).to_string(),
+                    key: None,
+                    on_modifier: true,
+                    modifier_key: Some(mod_name.to_string()),
+                };
+            }
+        }
         return attribute_name(name_text);
     }
 
@@ -106,11 +129,11 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
 // ── Helpers ──
 
 fn plugin_name(name: &str) -> &str {
-    name.strip_prefix("data-")
-        .unwrap_or(name)
-        .split(':')
-        .next()
-        .unwrap_or(name)
+    let stripped = name.strip_prefix("data-").unwrap_or(name);
+    // Strip colon+key if present: "on:click__debounce" -> "on"
+    let base = stripped.split(':').next().unwrap_or(stripped);
+    // Strip double-underscore modifiers: "signals__ifmissing" -> "signals"
+    base.split("__").next().unwrap_or(base)
 }
 
 /// Detect cursor on a `data-*` key or value inside `attrs={{...}}` prop.
@@ -176,14 +199,44 @@ fn attrs_prop_position(attr_node: Node, source: &str, offset: usize) -> Option<C
                             Some((p, r)) => (p.to_string(), Some(r.to_string())),
                             None => (after.to_string(), None),
                         };
-                        let name_parts: Vec<&str> =
-                            rest.as_deref().unwrap_or("").split("__").collect();
+                        let rest = rest.unwrap_or_default();
+                        let key_part = rest.split("__").next().unwrap_or("");
+                        let key = if key_part.is_empty() {
+                            None
+                        } else {
+                            Some(key_part.to_string())
+                        };
+
+                        // Check if cursor is on a __modifier portion
+                        let mod_start_in = rest.find("__");
+                        let rel_in_rest = offset.saturating_sub(
+                            kn.start_byte() + 5 // "data-"
+                                + after.find(':').map_or(0, |p| p + 1),
+                        );
+                        let (on_modifier, modifier_key) = if let Some(ms) = mod_start_in {
+                            if rel_in_rest >= ms {
+                                let mod_part = &rest[ms + 2..];
+                                let mod_end = mod_part
+                                    .find(|c: char| {
+                                        !c.is_ascii_alphanumeric()
+                                            && c != '-'
+                                            && c != '_'
+                                            && c != '.'
+                                    })
+                                    .unwrap_or(mod_part.len());
+                                (true, Some(mod_part[..mod_end].to_string()))
+                            } else {
+                                (false, None)
+                            }
+                        } else {
+                            (false, None)
+                        };
+
                         return Some(CursorPosition::AttrsPropKey {
                             plugin_name: plugin,
-                            key: name_parts
-                                .first()
-                                .filter(|s| !s.is_empty())
-                                .map(|s| s.to_string()),
+                            key,
+                            on_modifier,
+                            modifier_key,
                         });
                     }
                 }
@@ -211,40 +264,77 @@ fn attribute_name(name_text: &str) -> CursorPosition {
     }
 }
 
-fn after_colon(name_text: &str, source: &str, colon_offset: Option<usize>) -> CursorPosition {
-    // Extract plugin name and key.
-    // For HTML: name_text includes colon, e.g. "data-ref:search-input"
-    // For TSX: name_text is "data-ref", colon is separate node, we read key from source
+fn after_colon(
+    name_text: &str,
+    source: &str,
+    colon_offset: Option<usize>,
+    cursor_offset: usize,
+) -> CursorPosition {
     let plugin_name = name_text.strip_prefix("data-").unwrap_or(name_text);
     let plugin_name = plugin_name.split(':').next().unwrap_or(plugin_name);
 
-    let key = if let Some(co) = colon_offset {
-        // Read from source after the colon, up to __modifiers or end of name
-        let after_colon = &source[co + 1..];
-        let end = after_colon
+    let (key, modifier_key, on_modifier) = if let Some(co) = colon_offset {
+        let after = &source[co + 1..];
+        // Find where the key ends (before __ or space/end)
+        let key_end = after.find("__").unwrap_or(after.len());
+        let key_raw = &after[..key_end];
+        let key_raw = key_raw
             .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-            .unwrap_or(after_colon.len());
-        let raw = &after_colon[..end];
-        if raw.is_empty() {
+            .map(|p| &after[..p])
+            .unwrap_or(key_raw);
+        let key = if key_raw.is_empty() {
             None
         } else {
-            Some(raw.to_string())
+            Some(key_raw.to_string())
+        };
+
+        // Check if cursor is on a modifier (after __)
+        let rel = cursor_offset.saturating_sub(co + 1);
+        let mod_start = after.find("__").unwrap_or(usize::MAX);
+        if rel >= mod_start && mod_start < after.len() {
+            let mod_part = &after[mod_start + 2..];
+            let mod_end = mod_part
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
+                .unwrap_or(mod_part.len());
+            let mod_name = &mod_part[..mod_end];
+            (key, Some(mod_name.to_string()), true)
+        } else {
+            (key, None, false)
         }
     } else if let Some(colon_pos) = name_text.find(':') {
         let after = &name_text[colon_pos + 1..];
         let raw = after.split("__").next().unwrap_or("");
-        if raw.is_empty() {
+        let key = if raw.is_empty() {
             None
         } else {
             Some(raw.to_string())
+        };
+
+        let _rel = cursor_offset.saturating_sub(name_text.len());
+        let mod_start_in_attr = name_text.find("__");
+        if let Some(ms) = mod_start_in_attr {
+            if cursor_offset >= name_text.len() - name_text[ms..].len() {
+                let mod_part = &name_text[ms + 2..];
+                let mod_name = mod_part
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
+                    .map(|p| &mod_part[..p])
+                    .unwrap_or(mod_part);
+                (key, Some(mod_name.to_string()), true)
+            } else {
+                (key, None, false)
+            }
+        } else {
+            (key, None, false)
         }
     } else {
-        None
+        (None, None, false)
     };
 
     CursorPosition::AfterColon {
         plugin_name: plugin_name.to_string(),
         key,
+        on_modifier,
+        modifier_key,
     }
 }
 
@@ -404,7 +494,10 @@ mod tests {
     fn test_after_colon() {
         let pos = detect_at(r#"<div data-on:click="x">"#, 13);
         assert!(matches!(pos, CursorPosition::AfterColon { .. }));
-        if let CursorPosition::AfterColon { plugin_name, key } = &pos {
+        if let CursorPosition::AfterColon {
+            plugin_name, key, ..
+        } = &pos
+        {
             assert_eq!(plugin_name, "on");
             assert_eq!(key.as_deref(), Some("click"));
         }

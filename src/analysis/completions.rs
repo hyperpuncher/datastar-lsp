@@ -30,8 +30,12 @@ pub fn generate(
             // Cursor is inside a data-* attribute name — complete attribute names
             items.extend(complete_attribute_names(&attrs));
         }
-        CursorPosition::AfterColon { plugin_name, key }
-        | CursorPosition::AttrsPropKey { plugin_name, key } => {
+        CursorPosition::AfterColon {
+            plugin_name, key, ..
+        }
+        | CursorPosition::AttrsPropKey {
+            plugin_name, key, ..
+        } => {
             if let Some(def) = attributes::all().get(plugin_name.as_str()) {
                 let matching_attr = attrs.iter().find(|a| {
                     a.plugin_name == plugin_name

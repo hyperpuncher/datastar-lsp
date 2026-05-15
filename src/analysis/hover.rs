@@ -19,11 +19,38 @@ pub fn generate(
 
     match cursor::detect(tree.root_node(), text, offset) {
         CursorPosition::AttributeName { plugin_name } => hover_plugin(&plugin_name, None, &attrs),
-        CursorPosition::AfterColon { plugin_name, key } => {
-            hover_plugin(&plugin_name, key.as_deref(), &attrs)
+        CursorPosition::AfterColon {
+            plugin_name,
+            key,
+            on_modifier,
+            modifier_key,
+            ..
+        } => {
+            if on_modifier {
+                if let Some(mod_key) = modifier_key {
+                    hover_modifier(&plugin_name, &mod_key)
+                } else {
+                    hover_plugin(&plugin_name, key.as_deref(), &attrs)
+                }
+            } else {
+                hover_plugin(&plugin_name, key.as_deref(), &attrs)
+            }
         }
-        CursorPosition::AttrsPropKey { plugin_name, key } => {
-            hover_plugin(&plugin_name, key.as_deref(), &attrs)
+        CursorPosition::AttrsPropKey {
+            plugin_name,
+            key,
+            on_modifier,
+            modifier_key,
+        } => {
+            if on_modifier {
+                if let Some(mod_key) = modifier_key {
+                    hover_modifier(&plugin_name, &mod_key)
+                } else {
+                    hover_plugin(&plugin_name, key.as_deref(), &attrs)
+                }
+            } else {
+                hover_plugin(&plugin_name, key.as_deref(), &attrs)
+            }
         }
         CursorPosition::AttributeValue {
             value_start,
@@ -64,7 +91,7 @@ fn hover_plugin(
     let mut content = format!("## `data-{}`\n\n{}", plugin_name, def.description);
 
     if let Some(k) = key.or_else(|| attr.and_then(|a| a.key.as_deref())) {
-        content.push_str(&format!("**Key:** `{k}`\n"));
+        content.push_str(&format!("\n\n**Key:** `{k}`"));
     }
 
     if let Some(mods) = attr
@@ -113,6 +140,24 @@ fn hover_plugin(
         }),
         range: None,
     })
+}
+
+fn hover_modifier(plugin_name: &str, mod_name: &str) -> Option<Hover> {
+    // Strip tag part: "debounce.500ms" -> "debounce"
+    let base = mod_name.split('.').next().unwrap_or(mod_name);
+    let registry = crate::data::modifiers::all();
+    let def = registry.get(base)?;
+    let tags = mod_name.strip_prefix(&format!("{base}.")).unwrap_or("");
+    let mut content = format!("## `__{base}`\n\n{}", def.description);
+    if def.tags.is_empty() || def.tags == crate::data::modifiers::ANY_TAG {
+        if !tags.is_empty() {
+            content.push_str(&format!("\n\n**Tag:** `{tags}`"));
+        }
+    } else if !tags.is_empty() {
+        content.push_str(&format!("\n\n**Tag:** `{tags}`"));
+    }
+    content.push_str(&format!("\n\n**Used on:** `data-{plugin_name}`"));
+    mk_hover(&content)
 }
 
 fn hover_value_text(

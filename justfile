@@ -21,3 +21,8 @@ fix:
 # Build Zed extension WASM
 zed-build:
     cd zed && cargo build --target wasm32-wasip1 --release
+
+# Update all dependencies
+update:
+    cargo update
+    cd zed && cargo update

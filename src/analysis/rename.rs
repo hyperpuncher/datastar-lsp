@@ -27,8 +27,9 @@ pub fn rename_signal(
     let old_name = signal_util::find_signal_at_cursor(&attrs, offset)
         .or_else(|| def_name_from_cursor(tree.root_node(), text, offset))?;
     let top = old_name.split('.').next().unwrap_or("");
+    let top_camel = signal_util::kebab_to_camel(top);
 
-    if !signal_util::is_defined(top, &attrs, project_index) {
+    if !signal_util::is_defined(&top_camel, &attrs, project_index) {
         return None;
     }
 
@@ -42,13 +43,14 @@ pub fn rename_signal(
         }
         if !signal_util::signal_names_from_attr(attr)
             .iter()
-            .any(|n| n.as_str() == top)
+            .any(|n| n.as_str() == top_camel)
         {
             continue;
         }
-        // Key-based: data-bind:foo → rename the key after colon
+        // Key-based: data-bind:foo, data-ref:search-input → rename to kebab-case
         if let Some(key_pos) = attr.raw_name.find(':') {
             let start = attr.name_start + key_pos + 1;
+            let key_name = attr.key.as_deref().unwrap_or("");
             let (line, col) = line_index.byte_to_position(start);
             edits.push(TextEdit {
                 range: tower_lsp::lsp_types::Range {
@@ -58,10 +60,10 @@ pub fn rename_signal(
                     },
                     end: Position {
                         line,
-                        character: col + top.len() as u32,
+                        character: col + key_name.len() as u32,
                     },
                 },
-                new_text: new_name.to_string(),
+                new_text: signal_util::camel_to_kebab(new_name),
             });
             continue;
         }
@@ -69,7 +71,7 @@ pub fn rename_signal(
         if let Some(value_start) = attr.value_start {
             if let Some(ref val) = attr.value {
                 // Object literal: data-signals="{foo: 0, bar: 1}"
-                for (r_start, r_end) in signal_util::find_obj_key_ranges(val, top) {
+                for (r_start, r_end) in signal_util::find_obj_key_ranges(val, &top_camel) {
                     let (line, col) = line_index.byte_to_position(value_start + r_start);
                     let (_, end_col) = line_index.byte_to_position(value_start + r_end);
                     edits.push(TextEdit {
@@ -87,8 +89,8 @@ pub fn rename_signal(
                     });
                 }
                 // Simple value: data-bind="foo"
-                if val.trim() == top {
-                    let pos = val.find(top).unwrap_or(0);
+                if val.trim() == top_camel {
+                    let pos = val.find(&top_camel).unwrap_or(0);
                     let start = value_start + pos;
                     let (line, col) = line_index.byte_to_position(start);
                     edits.push(TextEdit {
@@ -99,7 +101,7 @@ pub fn rename_signal(
                             },
                             end: Position {
                                 line,
-                                character: col + top.len() as u32,
+                                character: col + top_camel.len() as u32,
                             },
                         },
                         new_text: new_name.to_string(),
@@ -115,7 +117,7 @@ pub fn rename_signal(
             continue;
         };
         let mut search = value.as_str();
-        while let Some(pos) = search.find(&format!("${top}")) {
+        while let Some(pos) = search.find(&format!("${top_camel}")) {
             // value_start points into original text; for HTML it's after the opening quote.
             // pos is a byte offset within `value` (the unquoted contents).
             let byte_pos = value_start + pos;
@@ -128,7 +130,7 @@ pub fn rename_signal(
                     },
                     end: Position {
                         line,
-                        character: col + top.len() as u32,
+                        character: col + top_camel.len() as u32,
                     },
                 },
                 new_text: new_name.to_string(),
@@ -140,7 +142,7 @@ pub fn rename_signal(
     // Cross-file definitions and $references
     if let Some(index) = project_index {
         // Rename definitions in other files
-        for def in signal_util::index_find_all_defs(index, top) {
+        for def in signal_util::index_find_all_defs(index, &top_camel) {
             if &def.0 == uri {
                 continue;
             }
@@ -172,7 +174,7 @@ pub fn rename_signal(
             let cross_li = entry.value();
             let cross_text = cross_li.text();
             let cross_edits = changes.entry(cross_uri.clone()).or_default();
-            let top_with_dollar = format!("${top}");
+            let top_with_dollar = format!("${top_camel}");
             for (pos, _) in cross_text.match_indices(&top_with_dollar) {
                 let (line, col) = cross_li.byte_to_position(pos + 1);
                 cross_edits.push(TextEdit {
@@ -183,7 +185,7 @@ pub fn rename_signal(
                         },
                         end: Position {
                             line,
-                            character: col + top.len() as u32,
+                            character: col + top_camel.len() as u32,
                         },
                     },
                     new_text: new_name.to_string(),
@@ -295,5 +297,23 @@ mod tests {
         assert!(result.is_some());
         let total: usize = result.unwrap().values().map(|v| v.len()).sum();
         assert!(total >= 2, "got {} edits", total);
+    }
+
+    #[test]
+    fn test_rename_kebab_key_definition() {
+        // data-ref:search-input — rename from definition via AfterColon cursor
+        let html = r#"<div data-ref:search-input=""><span data-text="$searchInput"></span></div>"#;
+        let result = ren_for(html, ":search-input", "myRef");
+        assert!(result.is_some());
+        let edits: Vec<_> = result.unwrap().into_values().flatten().collect();
+        // Should rename key to my-ref (kebab) and $searchInput to $myRef
+        assert!(
+            edits.iter().any(|e| e.new_text == "my-ref"),
+            "missing kebab key rename"
+        );
+        assert!(
+            edits.iter().any(|e| e.new_text == "myRef"),
+            "missing $ref rename"
+        );
     }
 }

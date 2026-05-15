@@ -71,12 +71,7 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
     let val_result = find_value_in_attr(attr_node, source, offset);
 
     if at_or_after_colon && val_result.is_none() {
-        let full_name = if name_text.contains(':') {
-            name_text.to_string()
-        } else {
-            format!("{name_text}:")
-        };
-        return after_colon(&full_name);
+        return after_colon(name_text, source, colon_offset);
     }
 
     if in_name {
@@ -106,18 +101,40 @@ fn attribute_name(name_text: &str) -> CursorPosition {
     }
 }
 
-fn after_colon(name_text: &str) -> CursorPosition {
-    let after = &name_text[5..]; // strip "data-"
-    let (p_name, key) = match after.split_once(':') {
-        Some((p, k)) => (
-            p.to_string(),
-            Some(k.split("__").next().unwrap_or("").to_string()),
-        ),
-        None => (after.to_string(), None),
+fn after_colon(name_text: &str, source: &str, colon_offset: Option<usize>) -> CursorPosition {
+    // Extract plugin name and key.
+    // For HTML: name_text includes colon, e.g. "data-ref:search-input"
+    // For TSX: name_text is "data-ref", colon is separate node, we read key from source
+    let plugin_name = name_text.strip_prefix("data-").unwrap_or(name_text);
+    let plugin_name = plugin_name.split(':').next().unwrap_or(plugin_name);
+
+    let key = if let Some(co) = colon_offset {
+        // Read from source after the colon, up to __modifiers or end of name
+        let after_colon = &source[co + 1..];
+        let end = after_colon
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+            .unwrap_or(after_colon.len());
+        let raw = &after_colon[..end];
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw.to_string())
+        }
+    } else if let Some(colon_pos) = name_text.find(':') {
+        let after = &name_text[colon_pos + 1..];
+        let raw = after.split("__").next().unwrap_or("");
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw.to_string())
+        }
+    } else {
+        None
     };
+
     CursorPosition::AfterColon {
-        plugin_name: p_name,
-        key: key.filter(|k| !k.is_empty()),
+        plugin_name: plugin_name.to_string(),
+        key,
     }
 }
 

@@ -365,6 +365,8 @@ fn emit_undefined_signals(
             continue;
         }
         let top = span.name.split('.').next().unwrap_or("");
+        // Also strip trailing method call for diag message only
+        let display = span.name.trim_end_matches(|c: char| c == '(' || c == ')');
         if signal_util::is_builtin_signal(top) {
             continue;
         }
@@ -373,10 +375,10 @@ fn emit_undefined_signals(
         }
         if let Some(index) = project_index {
             if !signal_util::index_find_def(index, top) {
-                emit_undefined(attr, value, line_index, diagnostics, &span.name);
+                emit_undefined(attr, value, line_index, diagnostics, display);
             }
         } else {
-            emit_undefined(attr, value, line_index, diagnostics, &span.name);
+            emit_undefined(attr, value, line_index, diagnostics, display);
         }
     }
 }

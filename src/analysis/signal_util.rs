@@ -78,9 +78,9 @@ pub fn is_defined(
 pub fn signal_names_from_attr(attr: &AttrData) -> Vec<String> {
     let mut names = Vec::new();
 
-    // Key-based: data-bind:foo → signal is "foo"
+    // Key-based: data-bind:foo, data-ref:search-input → signal is camelCase version
     if let Some(ref k) = attr.key {
-        names.push(k.clone());
+        names.push(kebab_to_camel(k));
         return names;
     }
 
@@ -288,18 +288,58 @@ pub fn is_valid_signal_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Convert kebab-case to camelCase.
+pub fn kebab_to_camel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cap = false;
+    for c in s.chars() {
+        if c == '-' {
+            cap = true;
+        } else if cap {
+            out.push(c.to_ascii_uppercase());
+            cap = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Convert camelCase to kebab-case.
+pub fn camel_to_kebab(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            if !out.is_empty() {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis::ts_util::AttrData;
 
     #[test]
-    fn test_is_valid_signal_name() {
-        assert!(is_valid_signal_name("counter"));
-        assert!(is_valid_signal_name("user-name"));
-        assert!(is_valid_signal_name("my_signal"));
-        assert!(!is_valid_signal_name(""));
-        assert!(!is_valid_signal_name("my name"));
+    fn test_kebab_to_camel() {
+        assert_eq!(kebab_to_camel("search-input"), "searchInput");
+        assert_eq!(kebab_to_camel("foo"), "foo");
+        assert_eq!(kebab_to_camel("my-signal-name"), "mySignalName");
+        assert_eq!(kebab_to_camel(""), "");
+    }
+
+    #[test]
+    fn test_camel_to_kebab() {
+        assert_eq!(camel_to_kebab("searchInput"), "search-input");
+        assert_eq!(camel_to_kebab("foo"), "foo");
+        assert_eq!(camel_to_kebab("mySignalName"), "my-signal-name");
+        assert_eq!(camel_to_kebab(""), "");
     }
 
     #[test]

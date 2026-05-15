@@ -17,6 +17,17 @@ pub enum CursorPosition {
         value_start: usize,
         full_value: String,
     },
+    /// Cursor is on a `data-*` key inside an `attrs={{...}}` prop.
+    AttrsPropKey {
+        plugin_name: String,
+        key: Option<String>,
+    },
+    /// Cursor is on a `data-*` value inside an `attrs={{...}}` prop.
+    AttrsPropValue {
+        plugin_name: String,
+        value_start: usize,
+        full_value: String,
+    },
     /// Cursor is inside HTML/JSX markup but not in a data-* attribute — offer attribute completions.
     InMarkup,
     /// Cursor is not in any Datastar-related position.
@@ -41,6 +52,13 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
     let Ok(name_text) = name_node.utf8_text(source.as_bytes()) else {
         return CursorPosition::None;
     };
+
+    // attrs={{...}} prop: check if cursor is on a data-* key or value inside the object
+    if name_text == "attrs" {
+        if let Some(pos) = attrs_prop_position(attr_node, source, offset) {
+            return pos;
+        }
+    }
 
     if !name_text.starts_with("data-") {
         return CursorPosition::InMarkup;
@@ -93,6 +111,98 @@ fn plugin_name(name: &str) -> &str {
         .split(':')
         .next()
         .unwrap_or(name)
+}
+
+/// Detect cursor on a `data-*` key or value inside `attrs={{...}}` prop.
+fn attrs_prop_position(attr_node: Node, source: &str, offset: usize) -> Option<CursorPosition> {
+    // Find the jsx_expression child, then the object
+    for i in 0..attr_node.child_count() {
+        let expr = attr_node.child(i as u32)?;
+        if expr.kind() != "jsx_expression" {
+            continue;
+        }
+        for j in 0..expr.child_count() {
+            let obj = expr.child(j as u32)?;
+            if obj.kind() != "object" {
+                continue;
+            }
+            for k in 0..obj.child_count() {
+                let pair = obj.child(k as u32)?;
+                if pair.kind() != "pair" || offset < pair.start_byte() || offset > pair.end_byte() {
+                    continue;
+                }
+                let mut key_text: Option<&str> = None;
+                let mut key_node: Option<Node> = None;
+                let mut val_text: Option<&str> = None;
+                let mut val_start: Option<usize> = None;
+
+                for l in 0..pair.child_count() {
+                    let child = pair.child(l as u32)?;
+                    match child.kind() {
+                        "string" | "template_string" => {
+                            let raw = child.utf8_text(source.as_bytes()).ok()?;
+                            let inner = if raw.len() >= 2 {
+                                &raw[1..raw.len() - 1]
+                            } else {
+                                raw
+                            };
+                            if key_text.is_none() {
+                                key_text = Some(inner);
+                                key_node = Some(child);
+                            } else {
+                                val_text = Some(inner);
+                                val_start = Some(child.start_byte() + 1);
+                            }
+                        }
+                        "jsx_expression" | "template_literal" => {
+                            let raw = child.utf8_text(source.as_bytes()).ok()?;
+                            val_text = Some(&raw[1..raw.len() - 1]);
+                            val_start = Some(child.start_byte() + 1);
+                        }
+                        _ => {}
+                    }
+                }
+
+                let kt = key_text?;
+                if !kt.starts_with("data-") {
+                    return None;
+                }
+
+                // Cursor on key?
+                if let Some(kn) = key_node {
+                    if offset >= kn.start_byte() && offset <= kn.end_byte() {
+                        let after = &kt[5..];
+                        let (plugin, rest) = match after.split_once(':') {
+                            Some((p, r)) => (p.to_string(), Some(r.to_string())),
+                            None => (after.to_string(), None),
+                        };
+                        let name_parts: Vec<&str> =
+                            rest.as_deref().unwrap_or("").split("__").collect();
+                        return Some(CursorPosition::AttrsPropKey {
+                            plugin_name: plugin,
+                            key: name_parts
+                                .first()
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string()),
+                        });
+                    }
+                }
+
+                // Cursor on value?
+                if let (Some(vt), Some(vs)) = (val_text, val_start) {
+                    if offset >= vs && offset <= vs + vt.len() {
+                        let plugin = kt[5..].split(':').next().unwrap_or(&kt[5..]);
+                        return Some(CursorPosition::AttrsPropValue {
+                            plugin_name: plugin.to_string(),
+                            value_start: vs,
+                            full_value: vt.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn attribute_name(name_text: &str) -> CursorPosition {

@@ -47,6 +47,11 @@ pub fn collect_from_tree(node: tree_sitter::Node, text: &str) -> Vec<AttrData> {
 fn collect_recursive(node: tree_sitter::Node, src: &[u8], attrs: &mut Vec<AttrData>) {
     match node.kind() {
         "attribute" | "jsx_attribute" => {
+            // Check for `attrs={{...}}` — JSX pattern for passing data-* as object
+            if let Some(items) = extract_attrs_prop(node, src) {
+                attrs.extend(items);
+                return;
+            }
             if let Some(item) = extract_attr(node, src) {
                 attrs.push(item);
                 return;
@@ -138,6 +143,118 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
     })
 }
 
+/// Extract data-* attributes from `attrs={{...}}` JSX prop.
+/// Walks the object literal pairs, treating string keys starting with `data-` as attributes.
+fn extract_attrs_prop(node: tree_sitter::Node, src: &[u8]) -> Option<Vec<AttrData>> {
+    // Check if this is an `attrs` prop
+    let mut name_node: Option<tree_sitter::Node> = None;
+    let mut expr_node: Option<tree_sitter::Node> = None;
+    for i in 0..node.child_count() {
+        let child = node.child(i as u32)?;
+        match child.kind() {
+            "property_identifier" | "jsx_namespace_name" => name_node = Some(child),
+            "jsx_expression" => expr_node = Some(child),
+            _ => {}
+        }
+    }
+    let name = name_node?.utf8_text(src).ok()?;
+    if name != "attrs" {
+        return None;
+    }
+
+    // Find the object literal inside the jsx_expression
+    let expr = expr_node?;
+    // jsx_expression = `{...}` — find the inner object node
+    let mut obj: Option<tree_sitter::Node> = None;
+    for i in 0..expr.child_count() {
+        if let Some(child) = expr.child(i as u32) {
+            if child.kind() == "object" {
+                obj = Some(child);
+                break;
+            }
+        }
+    }
+    let obj = obj?;
+
+    let mut attrs = Vec::new();
+    for i in 0..obj.child_count() {
+        let pair = match obj.child(i as u32) {
+            Some(p) if p.kind() == "pair" => p,
+            _ => continue,
+        };
+        // pair: key (string/property_identifier) : value
+        let mut key_text: Option<String> = None;
+        let mut key_start: Option<usize> = None;
+        let mut val_text: Option<String> = None;
+        let mut val_start: Option<usize> = None;
+        for j in 0..pair.child_count() {
+            let child = pair.child(j as u32)?;
+            match child.kind() {
+                "string" | "template_string" => {
+                    let raw = child.utf8_text(src).ok()?;
+                    if key_text.is_none() {
+                        // Key: strip quotes
+                        let inner = if raw.len() >= 2 {
+                            raw[1..raw.len() - 1].to_string()
+                        } else {
+                            raw.to_string()
+                        };
+                        key_text = Some(inner);
+                        key_start = Some(child.start_byte() + 1);
+                    } else {
+                        // Value: strip quotes/template
+                        let inner = if raw.len() >= 2 {
+                            raw[1..raw.len() - 1].to_string()
+                        } else {
+                            raw.to_string()
+                        };
+                        val_text = Some(inner);
+                        val_start = Some(child.start_byte() + 1);
+                    }
+                }
+                "property_identifier" if key_text.is_none() => {
+                    key_text = child.utf8_text(src).ok().map(String::from);
+                    key_start = Some(child.start_byte());
+                }
+                "jsx_expression" | "template_literal" => {
+                    let raw = child.utf8_text(src).ok()?;
+                    val_text = Some(raw[1..raw.len() - 1].to_string());
+                    val_start = Some(child.start_byte() + 1);
+                }
+                "number" | "true" | "false" | "null" | "undefined" => {
+                    val_text = child.utf8_text(src).ok().map(String::from);
+                    val_start = Some(child.start_byte());
+                }
+                _ => {}
+            }
+        }
+
+        let key = key_text?;
+        if !key.starts_with("data-") {
+            continue;
+        }
+        let parsed = parse_attribute_key(&key);
+        let name_start = key_start.unwrap_or(0);
+        attrs.push(AttrData {
+            name_len: key.len(),
+            raw_name: key.clone(),
+            plugin_name: parsed.plugin,
+            key: parsed.key,
+            name_start,
+            value: val_text,
+            value_start: val_start,
+            modifiers: parsed.modifiers,
+            has_trailing_colon: false,
+        });
+    }
+
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(attrs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +301,28 @@ mod tests {
         let tsx_uri = tower_lsp::lsp_types::Url::parse("file:///tmp/test.tsx").unwrap();
         assert!(language_for(&html_uri) == tree_sitter_html::LANGUAGE.into());
         assert!(language_for(&tsx_uri) == tree_sitter_typescript::LANGUAGE_TSX.into());
+    }
+
+    #[test]
+    fn test_collect_attrs_prop() {
+        let text = r#"export function T() { return <div attrs={{"data-on:input__debounce.200ms": "@post('/filters')", "data-show": "$open"}} /> }"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let attrs = collect_from_tree(tree.root_node(), text);
+        assert!(
+            attrs.len() >= 2,
+            "expected 2+ attrs from attrs prop, got {}: {:?}",
+            attrs.len(),
+            attrs.iter().map(|a| &a.raw_name).collect::<Vec<_>>()
+        );
+        let on_attr = attrs.iter().find(|a| a.plugin_name == "on").unwrap();
+        assert_eq!(on_attr.key.as_deref(), Some("input"));
+        assert_eq!(on_attr.modifiers.len(), 1);
+        assert_eq!(on_attr.modifiers[0].0, "debounce");
+        assert_eq!(on_attr.modifiers[0].1, vec!["200ms"]);
+        assert!(attrs.iter().any(|a| a.plugin_name == "show"));
     }
 }

@@ -18,9 +18,19 @@ pub fn generate(
     let (tree, attrs) = ts_util::parse_and_collect(text, uri)?;
 
     match cursor::detect(tree.root_node(), text, offset) {
-        CursorPosition::AttributeName { plugin_name } => hover_plugin(&plugin_name, &attrs),
-        CursorPosition::AfterColon { plugin_name, .. } => hover_plugin(&plugin_name, &attrs),
+        CursorPosition::AttributeName { plugin_name } => hover_plugin(&plugin_name, None, &attrs),
+        CursorPosition::AfterColon { plugin_name, key } => {
+            hover_plugin(&plugin_name, key.as_deref(), &attrs)
+        }
+        CursorPosition::AttrsPropKey { plugin_name, key } => {
+            hover_plugin(&plugin_name, key.as_deref(), &attrs)
+        }
         CursorPosition::AttributeValue {
+            value_start,
+            full_value,
+            ..
+        }
+        | CursorPosition::AttrsPropValue {
             value_start,
             full_value,
             ..
@@ -36,16 +46,25 @@ pub fn generate(
     }
 }
 
-fn hover_plugin(plugin_name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Option<Hover> {
+fn hover_plugin(
+    plugin_name: &str,
+    key: Option<&str>,
+    attrs: &[crate::analysis::ts_util::AttrData],
+) -> Option<Hover> {
     let registry = attributes::all();
     let def = registry.get(plugin_name)?;
 
-    let attr = attrs.iter().find(|a| a.plugin_name == plugin_name);
+    let attr = match key {
+        Some(k) => attrs
+            .iter()
+            .find(|a| a.plugin_name == plugin_name && a.key.as_deref() == Some(k)),
+        None => attrs.iter().find(|a| a.plugin_name == plugin_name),
+    };
 
     let mut content = format!("## `data-{}`\n\n{}", plugin_name, def.description);
 
-    if let Some(key) = attr.and_then(|a| a.key.as_ref()) {
-        content.push_str(&format!("\n\n**Key:** `{key}`"));
+    if let Some(k) = key.or_else(|| attr.and_then(|a| a.key.as_deref())) {
+        content.push_str(&format!("**Key:** `{k}`\n"));
     }
 
     if let Some(mods) = attr

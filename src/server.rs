@@ -12,6 +12,7 @@ use datastar_lsp::analysis::{
 pub struct Backend {
     client: Client,
     project_index: Arc<ProjectIndex>,
+    workspace_root: std::sync::Mutex<Option<Url>>,
 }
 
 impl Backend {
@@ -19,13 +20,24 @@ impl Backend {
         Self {
             client,
             project_index: Arc::new(ProjectIndex::new()),
+            workspace_root: std::sync::Mutex::new(None),
         }
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Try root_uri first, then first workspace folder
+        let root = params.root_uri.or_else(|| {
+            params
+                .workspace_folders
+                .as_ref()
+                .and_then(|folders| folders.first().map(|f| f.uri.clone()))
+        });
+        if let Some(root_uri) = root {
+            *self.workspace_root.lock().unwrap() = Some(root_uri);
+        }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -74,6 +86,19 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "datastar-lsp initialized")
             .await;
+
+        // Scan workspace for relevant files and index them.
+        let root = self.workspace_root.lock().unwrap().clone();
+        if let Some(root) = root {
+            let root_path = root.to_file_path().unwrap_or_default();
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Indexing workspace: {}", root_path.display()),
+                )
+                .await;
+            self.index_workspace(&root_path).await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -223,5 +248,56 @@ impl Backend {
         self.client
             .publish_diagnostics(uri.clone(), diags, None)
             .await;
+    }
+
+    async fn index_workspace(&self, root: &std::path::Path) {
+        let extensions: &[&str] = &["html", "jsx", "tsx", "templ", "heex"];
+        let skip_dirs: &[&str] = &[
+            "node_modules",
+            ".git",
+            "dist",
+            "target",
+            ".astro",
+            ".nuxt",
+            ".next",
+            "build",
+            "vendor",
+        ];
+
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_str().unwrap_or("");
+                if e.file_type().is_dir() {
+                    !skip_dirs.contains(&name) && !name.starts_with('.')
+                } else {
+                    true
+                }
+            })
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| extensions.contains(&ext))
+            })
+        {
+            let path = entry.path();
+            // Also catch .blade.php
+            let is_blade = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".blade.php"));
+            if !is_blade
+                && !extensions.contains(&path.extension().and_then(|e| e.to_str()).unwrap_or(""))
+            {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(uri) = Url::from_file_path(path) {
+                    self.project_index.index(&uri, text);
+                }
+            }
+        }
     }
 }

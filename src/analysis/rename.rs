@@ -1,11 +1,72 @@
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{Position, TextEdit, Url};
+use tower_lsp::lsp_types::{Position, PrepareRenameResponse, TextEdit, Url};
 
 use crate::analysis::cursor::{self, CursorPosition};
 use crate::analysis::signal_util::{self, DEFINERS};
 use crate::analysis::ts_util;
 use crate::line_index::LineIndex;
+
+/// Prepare rename — return Range if cursor is on a renameable Datastar signal/attribute,
+/// otherwise None so nvim can fall through to the next LSP.
+pub fn prepare_rename(
+    line_index: &LineIndex,
+    text: &str,
+    position: Position,
+    uri: &Url,
+) -> Option<PrepareRenameResponse> {
+    let offset = line_index.position_to_byte_offset(position.line, position.character);
+
+    let (_tree, attrs) = ts_util::parse_and_collect(text, uri)?;
+
+    // Check if cursor is on a defined signal or a $ref
+    let name = signal_util::find_signal_at_cursor(&attrs, offset)
+        .or_else(|| def_name_from_cursor(_tree.root_node(), text, offset))?;
+
+    let top = name.split('.').next().unwrap_or("");
+    let top_camel = signal_util::kebab_to_camel(top);
+
+    if !signal_util::is_defined(&top_camel, &attrs, None) {
+        return None;
+    }
+
+    // Return a range that covers the signal name
+    let dollar_pattern = format!("${top_camel}");
+    if let Some(pos) = text[offset..].find(&dollar_pattern) {
+        let start = offset + pos + 1; // skip $
+        let (line, col) = line_index.byte_to_position(start);
+        return Some(PrepareRenameResponse::Range(tower_lsp::lsp_types::Range {
+            start: Position {
+                line,
+                character: col,
+            },
+            end: Position {
+                line,
+                character: col + top_camel.len() as u32,
+            },
+        }));
+    }
+
+    // For attribute-based definitions, return a range around the key
+    if let CursorPosition::AfterColon { key: Some(k), .. } =
+        cursor::detect(_tree.root_node(), text, offset)
+    {
+        let (line, col) = line_index.byte_to_position(offset);
+        return Some(PrepareRenameResponse::Range(tower_lsp::lsp_types::Range {
+            start: Position {
+                line,
+                character: col,
+            },
+            end: Position {
+                line,
+                character: col + k.len() as u32,
+            },
+        }));
+    }
+
+    // Cursor is on a data-* attribute but not on a specific renameable symbol
+    None
+}
 
 /// Rename a signal across the current document and all open files.
 pub fn rename_signal(

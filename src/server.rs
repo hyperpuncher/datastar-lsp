@@ -69,7 +69,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
-                    prepare_provider: Some(false),
+                    prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 })),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
@@ -135,6 +135,10 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
+        if !text.contains("data-") && !text.contains('$') {
+            return Ok(None);
+        }
+
         Ok(hover::generate(&line_index, &text, position, uri))
     }
 
@@ -146,6 +150,10 @@ impl LanguageServer for Backend {
             Some(e) => e,
             None => return Ok(None),
         };
+
+        if !text.contains("data-") && !text.contains('$') && !text.contains('@') {
+            return Ok(None);
+        }
 
         let items = completions::generate(&line_index, &text, position, uri);
         Ok(Some(CompletionResponse::List(CompletionList {
@@ -210,6 +218,25 @@ impl LanguageServer for Backend {
         Ok(Some(actions))
     }
 
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let position = params.position;
+
+        let (line_index, text) = match self.project_index.get(uri) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        if !text.contains("data-") {
+            return Ok(None);
+        }
+
+        Ok(rename::prepare_rename(&line_index, &text, position, uri))
+    }
+
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
@@ -219,6 +246,11 @@ impl LanguageServer for Backend {
             Some(e) => e,
             None => return Ok(None),
         };
+
+        // Skip files that don't contain any Datastar attributes
+        if !text.contains("data-") {
+            return Ok(None);
+        }
 
         let result = rename::rename_signal(
             &line_index,

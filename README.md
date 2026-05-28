@@ -27,23 +27,22 @@ HTML · Templ (Go) · JSX · TSX · HEEx (Elixir) · Blade (PHP)
 }
 ```
 
-### Manual
+### VS Code
 
-```lua
--- Neovim 0.11+
-vim.lsp.config("datastar_ls", {
-    cmd = { "/path/to/datastar-lsp" },
-    filetypes = { "html", "templ", "heex", "blade", "javascriptreact", "typescriptreact" },
-    root_markers = { ".git" },
-})
-vim.lsp.enable("datastar_ls")
-```
-
-### Build from source
+Download `datastar-lsp-*.vsix` from the [latest release](https://github.com/hyperpuncher/datastar-lsp/releases/latest), then:
 
 ```bash
-cargo install --git https://github.com/hyperpuncher/datastar-lsp
+code --install-extension datastar-lsp-*.vsix
 ```
+
+### Zed
+
+```bash
+git clone https://github.com/hyperpuncher/datastar-lsp \
+  ~/.config/zed/extensions/datastar
+```
+
+Then in Zed, run `zed: install cli` and `zed: reload extensions`.
 
 ## Requirements
 

@@ -1,6 +1,6 @@
 [package]
 name = "datastar-lsp"
-version = "0.12.2"
+version = "0.12.3"
 edition = "2021"
 description = "Language Server Protocol implementation for Datastar hypermedia framework"
 

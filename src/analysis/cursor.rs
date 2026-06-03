@@ -442,7 +442,22 @@ fn is_in_markup(root: Node, offset: usize) -> bool {
             return false;
         }
         let kind = node.kind();
-        if kind.starts_with("jsx_")
+        // jsx_expression can be an attribute value or a free-standing expression in element body.
+        // We only consider it "markup" if it's inside a jsx_opening_element or jsx_attribute.
+        if kind == "jsx_expression" {
+            if let Some(parent) = node.parent() {
+                let pk = parent.kind();
+                if pk == "jsx_opening_element"
+                    || pk == "jsx_attribute"
+                    || pk == "jsx_self_closing_element"
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if kind == "jsx_opening_element"
+            || kind == "jsx_self_closing_element"
             || kind == "attribute"
             || kind == "start_tag"
             || kind == "element"

@@ -105,11 +105,23 @@ fn extract_attr(node: tree_sitter::Node, src: &[u8]) -> Option<AttrData> {
                     value_start = Some(child.start_byte() + 1);
                 }
             }
-            // JSX expression (template literal or JS): `{...}`
+            // JSX expression: `{...}` — may wrap a template literal `{`...`}`
             "jsx_expression" => {
                 let raw = child.utf8_text(src).ok()?;
-                value = Some(raw[1..raw.len() - 1].to_string());
-                value_start = Some(child.start_byte() + 1);
+                let inner = &raw[1..raw.len() - 1];
+                // Unwrap a surrounding template literal so the value is the
+                // object/expression body, not the backtick-quoted string.
+                // e.g. data-signals={`{ foo: 1 }`} -> value = "{ foo: 1 }"
+                match (inner.find('`'), inner.rfind('`')) {
+                    (Some(b1), Some(b2)) if b2 > b1 => {
+                        value = Some(inner[b1 + 1..b2].to_string());
+                        value_start = Some(child.start_byte() + 1 + b1 + 1);
+                    }
+                    _ => {
+                        value = Some(inner.to_string());
+                        value_start = Some(child.start_byte() + 1);
+                    }
+                }
             }
             _ => {}
         }

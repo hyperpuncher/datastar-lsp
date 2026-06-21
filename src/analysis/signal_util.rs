@@ -173,8 +173,7 @@ pub fn find_obj_key_ranges(value: &str, name: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut depth = 0u32;
     let mut last = 0;
-    let leading_ws = value.len() - trimmed.len();
-    let brace_skip = leading_ws + 1; // skip whitespace + opening {
+    let brace_skip = value.find('{').map_or(1, |o| o + 1); // byte just past the opening {
     for (i, c) in inner.char_indices() {
         match c {
             '(' | '{' | '[' => depth += 1,
@@ -454,6 +453,33 @@ mod tests {
         let mut names = signal_names_from_attr(&attr);
         names.sort();
         assert_eq!(names, vec!["contents", "percentage"]);
+    }
+
+    #[test]
+    fn test_signal_names_from_template_object_literal() {
+        // data-signals={`{ status: 'idle', lapCount: 0 }`}
+        // After ts_util unwraps the template literal, value is the body:
+        let attr = AttrData {
+            raw_name: "data-signals".into(),
+            plugin_name: "signals".into(),
+            key: None,
+            name_start: 0,
+            name_len: 0,
+            value: Some("{ status: 'idle', running: false, lapCount: 0 }".into()),
+            value_start: None,
+            modifiers: vec![],
+            has_trailing_colon: false,
+        };
+        let mut names = signal_names_from_attr(&attr);
+        names.sort();
+        assert_eq!(names, vec!["lapCount", "running", "status"]);
+    }
+
+    #[test]
+    fn test_find_obj_key_ranges_with_surrounding_whitespace() {
+        let val = "\n  { foo: 1, bar: 2 }\n  ";
+        assert_eq!(val[5..8].as_bytes(), b"foo");
+        assert_eq!(find_obj_key_ranges(val, "foo"), vec![(5, 8)]);
     }
 
     #[test]

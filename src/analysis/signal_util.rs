@@ -478,7 +478,6 @@ mod tests {
     #[test]
     fn test_find_obj_key_ranges_with_surrounding_whitespace() {
         let val = "\n  { foo: 1, bar: 2 }\n  ";
-        assert_eq!(val[5..8].as_bytes(), b"foo");
         assert_eq!(find_obj_key_ranges(val, "foo"), vec![(5, 8)]);
     }
 

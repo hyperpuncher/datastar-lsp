@@ -100,19 +100,14 @@ pub fn detect(root: Node, source: &str, offset: usize) -> CursorPosition {
 
     if in_name {
         // Check if cursor is on a __modifier portion of the name
-        if let Some(mod_pos) = name_text.find("__") {
-            let mod_start = name_start + mod_pos;
-            if offset >= mod_start {
-                let mod_part = &name_text[mod_pos + 2..];
-                let mod_end = mod_part
-                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_')
-                    .unwrap_or(mod_part.len());
-                let mod_name = &mod_part[..mod_end];
+        if name_text.contains("__") {
+            let rel = offset.saturating_sub(name_start);
+            if let Some(mod_name) = modifier_in_name(name_text, rel) {
                 return CursorPosition::AfterColon {
                     plugin_name: plugin_name(name_text).to_string(),
                     key: None,
                     on_modifier: true,
-                    modifier_key: Some(mod_name.to_string()),
+                    modifier_key: Some(mod_name),
                 };
             }
         }
@@ -290,14 +285,8 @@ fn after_colon(
 
         // Check if cursor is on a modifier (after __)
         let rel = cursor_offset.saturating_sub(co + 1);
-        let mod_start = after.find("__").unwrap_or(usize::MAX);
-        if rel >= mod_start && mod_start < after.len() {
-            let mod_part = &after[mod_start + 2..];
-            let mod_end = mod_part
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
-                .unwrap_or(mod_part.len());
-            let mod_name = &mod_part[..mod_end];
-            (key, Some(mod_name.to_string()), true)
+        if let Some(mod_name) = modifier_at_cursor(after, rel) {
+            (key, Some(mod_name), true)
         } else {
             (key, None, false)
         }
@@ -336,6 +325,48 @@ fn after_colon(
         on_modifier,
         modifier_key,
     }
+}
+
+/// Given the text after a colon (e.g. "keydown__window__prevent") and cursor position
+/// relative to start of that text, return the modifier name at cursor, if any.
+fn modifier_at_cursor(after: &str, cursor_rel: usize) -> Option<String> {
+    let mut search_from = 0usize;
+    let mut seg_start = 0usize;
+    let mut is_first = true;
+
+    loop {
+        match after[search_from..].find("__") {
+            Some(i) => {
+                let abs_idx = search_from + i;
+                if !is_first && cursor_rel >= seg_start && cursor_rel < abs_idx {
+                    return Some(clean_modifier(&after[seg_start..abs_idx]));
+                }
+                seg_start = abs_idx + 2;
+                search_from = abs_idx + 2;
+                is_first = false;
+            }
+            None => {
+                if !is_first && cursor_rel >= seg_start {
+                    return Some(clean_modifier(&after[seg_start..]));
+                }
+                return None;
+            }
+        }
+    }
+}
+
+/// Like `modifier_at_cursor` but takes the full attribute name (e.g. "data-signals__ifmissing__local")
+/// and cursor offset relative to the start of the name.
+fn modifier_in_name(name_text: &str, cursor_rel: usize) -> Option<String> {
+    modifier_at_cursor(name_text, cursor_rel)
+}
+
+/// Strip trailing non-identifier characters from a raw modifier segment.
+fn clean_modifier(raw: &str) -> String {
+    let end = raw
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_' && c != '.')
+        .unwrap_or(raw.len());
+    raw[..end].to_string()
 }
 
 fn find_value_in_attr(attr: Node, source: &str, offset: usize) -> Option<CursorPosition> {

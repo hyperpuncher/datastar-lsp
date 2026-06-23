@@ -2,6 +2,7 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 
 use crate::analysis::cursor::{self, CursorPosition};
 use crate::analysis::examples;
+use crate::analysis::project_index::ProjectIndex;
 use crate::analysis::signal_util;
 use crate::analysis::ts_util;
 use crate::data::{actions, attributes};
@@ -12,6 +13,7 @@ pub fn generate(
     text: &str,
     position: Position,
     uri: &Url,
+    project_index: Option<&ProjectIndex>,
 ) -> Option<Hover> {
     let offset = line_index.position_to_byte_offset(position.line, position.character);
 
@@ -64,7 +66,7 @@ pub fn generate(
         } => {
             let rel = offset.saturating_sub(value_start);
             if rel < full_value.len() {
-                hover_value_text(&full_value, rel, &attrs)
+                hover_value_text(&full_value, rel, &attrs, project_index)
             } else {
                 None
             }
@@ -164,12 +166,13 @@ fn hover_value_text(
     value: &str,
     rel: usize,
     attrs: &[crate::analysis::ts_util::AttrData],
+    project_index: Option<&ProjectIndex>,
 ) -> Option<Hover> {
     use crate::analysis::value_scanner::{signal_at_cursor, span_at, SpanKind};
 
     if let Some(span) = span_at(value, rel) {
         return match span.kind {
-            SpanKind::DollarSignal => hover_signal(&span.name, attrs),
+            SpanKind::DollarSignal => hover_signal(&span.name, attrs, project_index),
             SpanKind::AtAction => hover_action_name(&span.name),
             SpanKind::EvtDotProp => mk_hover(&format!(
                 "## `evt.{}`\n\nEvent property on `$evt` object.",
@@ -180,13 +183,17 @@ fn hover_value_text(
 
     // Cursor may be between tokens — try backtracking to find a signal
     if let Some(name) = signal_at_cursor(value, rel) {
-        return hover_signal(&name, attrs);
+        return hover_signal(&name, attrs, project_index);
     }
 
     None
 }
 
-fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Option<Hover> {
+fn hover_signal(
+    name: &str,
+    attrs: &[crate::analysis::ts_util::AttrData],
+    project_index: Option<&ProjectIndex>,
+) -> Option<Hover> {
     let top = name.split('.').next().unwrap_or("");
 
     if top == "evt" {
@@ -200,13 +207,27 @@ fn hover_signal(name: &str, attrs: &[crate::analysis::ts_util::AttrData]) -> Opt
         );
     }
 
-    if signal_util::is_defined(top, attrs, None) {
+    let defined_locally = signal_util::is_defined(top, attrs, None);
+    if defined_locally {
         mk_hover(&format!("## `${name}`\n\nSignal defined in this document."))
+    } else if let Some(idx) = project_index {
+        if let Some((url, _, _)) = signal_util::index_find_def_entry(idx, top) {
+            let file = url
+                .path_segments()
+                .and_then(|mut s| s.next_back())
+                .unwrap_or("<unknown>");
+            mk_hover(&format!("## `${name}`\n\nSignal defined in `{file}`."))
+        } else {
+            mk_hover(&format!(
+                "## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
+                name = name
+            ))
+        }
     } else {
         mk_hover(&format!(
-			"## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
-			name = name
-		))
+            "## `${name}`\n\n⚠️ **Undefined signal**: `${{{name}}}` is not defined in this document.",
+            name = name
+        ))
     }
 }
 
@@ -254,6 +275,7 @@ mod tests {
                 character: col,
             },
             &uri,
+            None,
         )
     }
 
@@ -281,6 +303,7 @@ mod tests {
                 character: 7,
             },
             &uri,
+            None,
         )
         .expect("hover at char 7");
         let v = match &h.contents {
@@ -305,6 +328,7 @@ mod tests {
                 character: col,
             },
             &uri,
+            None,
         )
         .expect("hover for $count");
         let v = match &h.contents {
@@ -329,6 +353,7 @@ mod tests {
                 character: col,
             },
             &uri,
+            None,
         );
         if let Some(h) = h {
             let v = match &h.contents {

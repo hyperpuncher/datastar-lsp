@@ -139,7 +139,13 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        Ok(hover::generate(&line_index, &text, position, uri))
+        Ok(hover::generate(
+            &line_index,
+            &text,
+            position,
+            uri,
+            Some(&self.project_index),
+        ))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

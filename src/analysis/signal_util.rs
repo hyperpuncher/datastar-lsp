@@ -204,15 +204,33 @@ pub fn find_obj_key_ranges(value: &str, name: &str) -> Vec<(usize, usize)> {
 }
 
 /// Check if a signal name is found in cross-file index text.
-/// Searches for both `data-{plugin}:{name}` and `data-{plugin}="{name}"`.
+/// Searches for exact name and its kebab-case / camelCase variant.
 pub fn index_find_def(index: &crate::analysis::project_index::ProjectIndex, name: &str) -> bool {
     index_find_def_entry(index, name).is_some()
+        || index_find_def_entry(index, &camel_to_kebab(name)).is_some()
+        || index_find_def_entry(index, &kebab_to_camel(name)).is_some()
 }
 
 /// Find the first cross-file definition of a signal.
 /// Returns (url, byte_offset_in_text, name_len) or None.
 /// The byte offset points to the first byte of the signal name.
+/// Tries exact name and kebab-case / camelCase variants.
 pub fn index_find_def_entry(
+    index: &crate::analysis::project_index::ProjectIndex,
+    name: &str,
+) -> Option<(tower_lsp::lsp_types::Url, usize, usize)> {
+    // Try exact name first, then variants
+    let names = [name.to_string(), camel_to_kebab(name), kebab_to_camel(name)];
+    for n in &names {
+        if let Some(r) = index_find_def_entry_exact(index, n) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+/// Search for signal definition by exact name (no case conversion).
+fn index_find_def_entry_exact(
     index: &crate::analysis::project_index::ProjectIndex,
     name: &str,
 ) -> Option<(tower_lsp::lsp_types::Url, usize, usize)> {
@@ -235,21 +253,30 @@ pub fn index_find_def_entry(
 }
 
 /// Find all cross-file definition locations of a signal.
+/// Tries exact name and kebab-case / camelCase variants.
 pub fn index_find_all_defs(
     index: &crate::analysis::project_index::ProjectIndex,
     name: &str,
 ) -> Vec<(tower_lsp::lsp_types::Url, usize, usize)> {
+    let names = [name.to_string(), camel_to_kebab(name), kebab_to_camel(name)];
+    let mut seen = std::collections::BTreeSet::new();
     let mut results = Vec::new();
-    for entry in index.iter() {
-        let t = entry.value().text();
-        for prefix in DEFINER_PREFIXES {
-            let key_pat = format!("{prefix}:{name}");
-            for (pos, _) in t.match_indices(&key_pat) {
-                results.push((entry.key().clone(), pos + prefix.len() + 1, name.len()));
-            }
-            let val_pat = format!("{prefix}=\"{name}\"");
-            for (pos, _) in t.match_indices(&val_pat) {
-                results.push((entry.key().clone(), pos + prefix.len() + 2, name.len()));
+    for n in &names {
+        if seen.contains(n.as_str()) {
+            continue;
+        }
+        seen.insert(n.as_str());
+        for entry in index.iter() {
+            let t = entry.value().text();
+            for prefix in DEFINER_PREFIXES {
+                let key_pat = format!("{prefix}:{n}");
+                for (pos, _) in t.match_indices(&key_pat) {
+                    results.push((entry.key().clone(), pos + prefix.len() + 1, n.len()));
+                }
+                let val_pat = format!("{prefix}=\"{n}\"");
+                for (pos, _) in t.match_indices(&val_pat) {
+                    results.push((entry.key().clone(), pos + prefix.len() + 2, n.len()));
+                }
             }
         }
     }

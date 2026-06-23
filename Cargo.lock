@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "datastar-lsp"
-version = "0.12.4"
+version = "0.12.6"
 dependencies = [
  "anyhow",
  "dashmap 6.2.1",
